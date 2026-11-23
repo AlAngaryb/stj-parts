@@ -1,0 +1,46 @@
+name: Tests and Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  windows-app:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: pyinstaller --noconfirm stjparts.spec
+      - name: Smoke test the built app
+        shell: pwsh
+        run: |
+          $env:STJ_PARTS_DATA = "$env:RUNNER_TEMP\stjdata"
+          $p = Start-Process dist\STJParts\STJParts.exe -ArgumentList "--no-open" -PassThru
+          Start-Sleep -Seconds 8
+          $r = Invoke-RestMethod http://127.0.0.1:8765/api/version
+          Stop-Process -Id $p.Id
+          if (-not $r.version) { throw "App did not start" }
+          Write-Host "Started version $($r.version)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: STJParts-windows
+          path: dist/STJParts/

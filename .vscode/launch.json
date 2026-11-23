@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run STJ Parts (test data)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "stjparts",
+      "args": ["--reload"],
+      "env": { "STJ_PARTS_DATA": "${workspaceFolder}/data" },
+      "justMyCode": true
+    }
+  ]
+}

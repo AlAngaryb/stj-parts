@@ -69,7 +69,7 @@ def test_print_without_printer_queues_the_job(conn):
     part = s.create_part(conn, {"name": "Seal kit", "room": "Shop", "location_text": "Rack A"}, "AB")
     preset = s.list_presets(conn)[0]["id"]
     r = s.print_label(conn, part["id"], preset, 3, True, True, "ab")
-    assert r["queued"] and not r["printed"] and "Windows" in r["error"]
+    assert r["queued"] and not r["printed"] and r["error"]  # message depends on the OS (no Windows vs no Brady)
     jobs = s.list_print_jobs(conn)
     assert len(jobs) == 1 and jobs[0]["copies"] == 3 and jobs[0]["part_no"] == part["part_no"]
     assert s.printer_status(conn)["waiting"] == 1

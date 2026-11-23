@@ -16,6 +16,12 @@ class PrinterUnavailable(RuntimeError):
 
 
 def available() -> bool:
+    """
+    Description: Checks whether this PC can print through Windows (it must be Windows and the
+        pywin32 library must be installed). The cloud test machines and Linux return False.
+    Parameters: None.
+    Returns: [bool] True if printing can be attempted.
+    """
     if sys.platform != "win32":
         return False
     try:
@@ -26,6 +32,11 @@ def available() -> bool:
 
 
 def list_printers() -> list[str]:
+    """
+    Description: Lists the printers Windows knows about, both local and network.
+    Parameters: None.
+    Returns: [list of str] Printer names exactly as Windows shows them (empty if not on Windows).
+    """
     if not available():
         return []
     import win32print
@@ -35,7 +46,13 @@ def list_printers() -> list[str]:
 
 
 def pick_printer(saved: str = "") -> str | None:
-    """The saved printer if it still exists, else the first one named Brady/BMP."""
+    """
+    Description: Chooses which printer gets labels: the saved one if it is still connected,
+        otherwise the first printer with "Brady" or "BMP" in its name.
+    Parameters:
+        1: saved - [str] The printer name saved in settings ("" if none).
+    Returns: [str or None] The printer to use, or None if no suitable printer is found.
+    """
     names = list_printers()
     if saved and saved in names:
         return saved
@@ -46,7 +63,21 @@ def pick_printer(saved: str = "") -> str | None:
 
 
 def print_labels(printer: str, images: list[Image.Image], width_in: float, height_in: float, title: str = "STJ Parts labels") -> None:
-    """Print each image as one label at its true physical size."""
+    """
+    Description: Sends label images to a Windows printer. It tells the driver the label size
+        (so it doesn't scale the label to a sheet of paper), then prints each image as one
+        label at its true physical size.
+        For example, services._run_job() calls this to print a queued job on the Brady.
+    Parameters:
+        1: printer - [str] The printer name as Windows lists it.
+        2: images - [list of PIL.Image.Image] One image per label to print.
+        3: width_in - [float] Label width in inches.
+        4: height_in - [float] Label height in inches.
+        5: title - [str] Job name shown in the Windows print queue.
+    Returns: Nothing.
+    Raises: PrinterUnavailable with a readable reason (not on Windows, printer not connected,
+        or an error reported by the driver such as out of tape).
+    """
     if not available():
         raise PrinterUnavailable("Printing only works on the Windows shop PC.")
     import win32con

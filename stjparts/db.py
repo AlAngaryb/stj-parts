@@ -131,10 +131,25 @@ MIGRATIONS: list[str] = [
 
 
 def db_path() -> Path:
+    """
+    Description: Where the real parts database file lives: parts.db inside the data folder.
+        On the shop PC that is %LOCALAPPDATA%\\STJParts\\parts.db.
+    Parameters: None.
+    Returns: [Path] The full path to parts.db.
+    """
     return config.data_dir() / "parts.db"
 
 
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
+    """
+    Description: Opens the database (creating it the first time), switches on the safety
+        settings (foreign keys, write-ahead logging, wait up to 5 s if busy) and brings the
+        tables up to date with migrate(). Called once when the app starts, and by the tests.
+    Parameters:
+        1: path - [Path, str or None] A database file to use instead of the normal one.
+           Tests pass a temporary file here. None means db_path().
+    Returns: [sqlite3.Connection] The open database, with rows readable by column name.
+    """
     conn = sqlite3.connect(str(path or db_path()), check_same_thread=False, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -145,6 +160,15 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
+    """
+    Description: Upgrades an older database to the current layout by running each migration
+        in MIGRATIONS that it hasn't had yet, in order. The database remembers its version
+        (PRAGMA user_version), so this is safe to run every time the app starts.
+        For example, a v0.1 database gets the label size and print queue tables on first run of v0.2.
+    Parameters:
+        1: conn - [sqlite3.Connection] The open database.
+    Returns: Nothing.
+    """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for number, sql in enumerate(MIGRATIONS[version:], start=version + 1):
         with transaction(conn):
@@ -154,7 +178,13 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def _split(sql: str) -> list[str]:
-    """Split a migration into statements (no semicolons inside our SQL strings)."""
+    """
+    Description: Splits one migration's SQL text into separate statements so they can run one
+        at a time inside a transaction. Lines starting with -- are comments and are skipped.
+    Parameters:
+        1: sql - [str] The migration text.
+    Returns: [list of str] The individual SQL statements.
+    """
     out, buf = [], []
     for line in sql.splitlines():
         if line.strip().startswith("--"):
@@ -173,6 +203,17 @@ def _split(sql: str) -> list[str]:
 
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """
+    Description: Groups several database changes so they all happen or none do. If anything
+        inside fails, every change in the group is undone. Used as a "with" block:
+            with transaction(conn):
+                ...change stock...
+                ...write the activity line...
+        For example, a check out never changes the count without also logging it.
+    Parameters:
+        1: conn - [sqlite3.Connection] The open database.
+    Returns: [sqlite3.Connection] The same connection, for use inside the block.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn

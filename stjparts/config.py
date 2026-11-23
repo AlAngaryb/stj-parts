@@ -11,10 +11,12 @@ PORT = int(os.environ.get("STJ_PARTS_PORT", "8765"))
 
 
 def data_dir() -> Path:
-    """Folder for the database, photos and documents.
-
-    STJ_PARTS_DATA overrides it (tests and portable installs use this).
-    Windows default: %LOCALAPPDATA%\\STJParts. Elsewhere: ~/.stjparts.
+    """
+    Description: Finds (and creates if needed) the folder that holds the database, photos and
+        documents. The STJ_PARTS_DATA environment variable overrides it; F5 in VS Code uses this
+        to keep test data in the repo's data folder, away from the real shop database.
+    Parameters: None.
+    Returns: [Path] %LOCALAPPDATA%\\STJParts on Windows, ~/.stjparts elsewhere, or the override.
     """
     override = os.environ.get("STJ_PARTS_DATA")
     if override:

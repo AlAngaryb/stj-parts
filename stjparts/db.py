@@ -95,6 +95,38 @@ MIGRATIONS: list[str] = [
         tokenize='unicode61 remove_diacritics 2', prefix='2 3'
     );
     """,
+    # 2: label sizes and the print queue
+    """
+    CREATE TABLE label_presets (
+        id            INTEGER PRIMARY KEY,
+        name          TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        description   TEXT NOT NULL DEFAULT '',
+        width_in      REAL NOT NULL CHECK (width_in > 0 AND width_in <= 4),
+        height_in     REAL NOT NULL CHECK (height_in > 0 AND height_in <= 4),
+        show_name     INTEGER NOT NULL DEFAULT 1,
+        show_location INTEGER NOT NULL DEFAULT 1,
+        sort          INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO label_presets(name, description, width_in, height_in, show_name, show_location, sort) VALUES
+        ('Part label', 'Bag, box or the part itself', 2.0, 1.0, 1, 1, 1),
+        ('Small part', 'Small bags and bin fronts', 1.5, 0.75, 1, 0, 2),
+        ('Shelf strip', 'Shelf edge under the part', 2.0, 0.5, 0, 0, 3),
+        ('Large bin', 'Totes and big boxes', 2.0, 2.0, 1, 1, 4);
+
+    CREATE TABLE print_jobs (
+        id            INTEGER PRIMARY KEY,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        part_id       INTEGER NOT NULL REFERENCES parts(id),
+        preset_id     INTEGER NOT NULL REFERENCES label_presets(id),
+        copies        INTEGER NOT NULL CHECK (copies BETWEEN 1 AND 200),
+        show_name     INTEGER NOT NULL,
+        show_location INTEGER NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'printed', 'cancelled')),
+        error         TEXT NOT NULL DEFAULT '',
+        who           TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX print_jobs_status ON print_jobs(status);
+    """,
 ]
 
 

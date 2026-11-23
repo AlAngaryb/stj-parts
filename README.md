@@ -4,7 +4,7 @@ Spare parts tracking for the St Johns maintenance shop: scan a label, see the pa
 check it in or out. Runs on one Windows PC with a USB barcode scanner and a Brady BMP71
 label printer. No server or internet needed.
 
-## What works now (v0.1)
+## What works now (v0.2)
 
 - Scan anywhere: a known barcode opens the part; an unknown one offers "Create new part".
   Works with scanners that press Enter after a scan and ones that don't.
@@ -15,8 +15,11 @@ label printer. No server or internet needed.
 - Parts library: search every field, typos allowed, filter by room, brand and stock, sort four ways.
 - Activity log colored by what's left, with a "To order only" view.
 - Vendors list, people list, merging duplicate parts (old labels keep working).
+- Label printing to the Brady BMP71 through its normal Windows driver: live preview, four label sizes
+  (editable), optional name and location, copies, and a PDF download. If the printer is off or out of
+  tape, jobs wait in a queue on the home screen until you press Print now.
 
-Next up: label printing, photos and documents, locations, Excel import/export, supervisor login,
+Next up: photos and documents, locations, Excel import/export, supervisor login,
 daily report. The full design is in `docs/spec.md`.
 
 ## Set up a development PC (Windows)

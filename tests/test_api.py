@@ -40,3 +40,14 @@ def test_patch_rejects_unknown_fields(client):
 def test_index_page_served(client):
     r = client.get("/")
     assert r.status_code == 200 and "STJ Parts" in r.text
+
+
+def test_parallel_requests_dont_fail(client):
+    # The home screen loads several things at once; this used to return 500s.
+    from concurrent.futures import ThreadPoolExecutor
+
+    client.post("/api/parts", json={"name": "x", "who": "AB"})
+    urls = ["/api/summary", "/api/activity", "/api/printer", "/api/people", "/api/parts?q=x"] * 6
+    with ThreadPoolExecutor(8) as ex:
+        codes = list(ex.map(lambda u: client.get(u).status_code, urls))
+    assert set(codes) == {200}

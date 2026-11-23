@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, barcodes, db, services
+from . import __version__, barcodes, db, labels, services
 from .services import NotFound, ServiceError
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -91,6 +91,28 @@ class VendorIn(BaseModel):
     notes: str = ""
 
 
+class PresetIn(BaseModel):
+    name: str
+    description: str = ""
+    width_in: float
+    height_in: float
+    show_name: bool = True
+    show_location: bool = True
+    sort: int = 0
+
+
+class PrintIn(BaseModel):
+    preset_id: int
+    copies: int = 1
+    show_name: bool = True
+    show_location: bool = True
+    who: str = ""
+
+
+class PrinterIn(BaseModel):
+    name: str
+
+
 class PersonIn(BaseModel):
     initials: str
     name: str = ""
@@ -102,7 +124,7 @@ def create_app(db_file: Path | str | None = None) -> FastAPI:
     conn = db.connect(db_file)
     app.state.conn = conn
 
-    lock = threading.RLock()
+    lock = threading.Lock()  # a plain Lock: FastAPI may release it from a different thread
 
     def get_conn():
         # One shared connection; requests take turns so transactions never interleave.
@@ -200,6 +222,59 @@ def create_app(db_file: Path | str | None = None) -> FastAPI:
     @app.get("/api/vendors/{vendor_id}")
     def vendor(vendor_id: int, c=Depends(get_conn)):
         return services.get_vendor(c, vendor_id)
+
+    # ------------------------------------------------ labels and printing
+    @app.get("/api/labels/presets")
+    def presets(c=Depends(get_conn)):
+        return services.list_presets(c)
+
+    @app.post("/api/labels/presets", status_code=201)
+    def add_preset(body: PresetIn, c=Depends(get_conn)):
+        return services.save_preset(c, body.model_dump())
+
+    @app.put("/api/labels/presets/{preset_id}")
+    def edit_preset(preset_id: int, body: PresetIn, c=Depends(get_conn)):
+        return services.save_preset(c, body.model_dump(), preset_id)
+
+    @app.get("/api/parts/{part_id}/label.png")
+    def label_png(part_id: int, preset: int, name: Optional[bool] = None, loc: Optional[bool] = None, c=Depends(get_conn)):
+        img = services.label_image(c, part_id, preset, name, loc)
+        return Response(labels.to_png(img), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/parts/{part_id}/label.pdf")
+    def label_pdf(part_id: int, preset: int, copies: int = 1, name: Optional[bool] = None, loc: Optional[bool] = None,
+                  c=Depends(get_conn)):
+        img = services.label_image(c, part_id, preset, name, loc)
+        pdf = labels.to_pdf([img] * max(1, min(copies, 200)), int(services.get_setting(c, "label_dpi")))
+        part_no = services.get_part(c, part_id)["part_no"]
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="label-{part_no}.pdf"'})
+
+    @app.post("/api/parts/{part_id}/print")
+    def print_label(part_id: int, body: PrintIn, c=Depends(get_conn)):
+        return services.print_label(c, part_id, body.preset_id, body.copies, body.show_name, body.show_location, body.who)
+
+    @app.get("/api/printer")
+    def printer(c=Depends(get_conn)):
+        return services.printer_status(c)
+
+    @app.put("/api/printer")
+    def choose_printer(body: PrinterIn, c=Depends(get_conn)):
+        services.set_label_printer(c, body.name)
+        return services.printer_status(c)
+
+    @app.get("/api/print-jobs")
+    def print_jobs(status: str = "waiting", c=Depends(get_conn)):
+        return services.list_print_jobs(c, status)
+
+    @app.post("/api/print-jobs/retry")
+    def retry_jobs(c=Depends(get_conn)):
+        return services.retry_print_jobs(c)
+
+    @app.post("/api/print-jobs/{job_id}/cancel")
+    def cancel_job(job_id: int, c=Depends(get_conn)):
+        services.cancel_print_job(c, job_id)
+        return {"cancelled": job_id}
 
     @app.get("/api/settings")
     def settings(c=Depends(get_conn)):

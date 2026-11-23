@@ -11,8 +11,9 @@ from . import config
 from .db import transaction
 
 
+# A problem the person at the screen can fix. The message is shown as-is.
 class ServiceError(ValueError):
-    """A problem the person at the screen can fix. The message is shown as-is."""
+    pass
 
 
 class NotFound(ServiceError):
@@ -32,17 +33,15 @@ TEXT_FIELDS = {f for f in PART_FIELDS if f not in ("min_qty", "max_qty", "vendor
 # Stored in the settings table; anything never saved falls back to config.DEFAULT_SETTINGS.
 # ======================================================================================
 
+# Description: Reads one setting, such as the part number prefix or label printer name.
+#     If a supervisor never saved it, the default from config.DEFAULT_SETTINGS is used.
+#     For example, next_part_no() calls get_setting(conn, "part_no_prefix") to get "STJ-".
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: key - [str] The setting name, e.g. "description_required".
+# Returns: [str] The setting's value (always text; "1"/"0" for on/off settings).
+# Raises: KeyError if the setting name doesn't exist at all.
 def get_setting(conn: sqlite3.Connection, key: str) -> str:
-    """
-    Description: Reads one setting, such as the part number prefix or label printer name.
-        If a supervisor never saved it, the default from config.DEFAULT_SETTINGS is used.
-        For example, next_part_no() calls get_setting(conn, "part_no_prefix") to get "STJ-".
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: key - [str] The setting name, e.g. "description_required".
-    Returns: [str] The setting's value (always text; "1"/"0" for on/off settings).
-    Raises: KeyError if the setting name doesn't exist at all.
-    """
     row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     if row:
         return row["value"]
@@ -51,17 +50,15 @@ def get_setting(conn: sqlite3.Connection, key: str) -> str:
     raise KeyError(key)
 
 
+# Description: Saves one setting, replacing any earlier value.
+#     For example, set_label_printer() uses it to remember which printer to use.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: key - [str] The setting name. Must be one listed in config.DEFAULT_SETTINGS.
+#     3: value - [str] The new value (numbers and on/off are stored as text).
+# Returns: Nothing.
+# Raises: ServiceError if the setting name is unknown.
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-    """
-    Description: Saves one setting, replacing any earlier value.
-        For example, set_label_printer() uses it to remember which printer to use.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: key - [str] The setting name. Must be one listed in config.DEFAULT_SETTINGS.
-        3: value - [str] The new value (numbers and on/off are stored as text).
-    Returns: Nothing.
-    Raises: ServiceError if the setting name is unknown.
-    """
     if key not in config.DEFAULT_SETTINGS:
         raise ServiceError(f"Unknown setting: {key}")
     conn.execute(
@@ -70,14 +67,12 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+# Description: Reads every setting at once, with defaults filled in.
+#     For example, the /api/settings endpoint returns this to the screens.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [dict of str to str] Setting name -> value.
 def all_settings(conn: sqlite3.Connection) -> dict[str, str]:
-    """
-    Description: Reads every setting at once, with defaults filled in.
-        For example, the /api/settings endpoint returns this to the screens.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [dict of str to str] Setting name -> value.
-    """
     return {k: get_setting(conn, k) for k in config.DEFAULT_SETTINGS}
 
 
@@ -89,28 +84,25 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, str]:
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
+# Description: Cleans up a barcode the way a scanner typed it: removes Enter, Tab and
+#     other invisible control characters, and spaces at either end.
+#     For example, "STJ-000001" followed by Enter (from a scanner that sends Enter)
+#     becomes just "STJ-000001".
+#     Every function that looks up or saves a barcode runs it through this first.
+# Parameters:
+#     1: code - [str] The raw text from the scanner or the keyboard.
+# Returns: [str] The cleaned code ("" if nothing is left).
 def normalize_code(code: str) -> str:
-    """
-    Description: Cleans up a barcode the way a scanner typed it: removes Enter, Tab and
-        other invisible control characters, and spaces at either end.
-        For example, "STJ-000001\r\n" from a scanner that sends Enter becomes "STJ-000001".
-        Every function that looks up or saves a barcode runs it through this first.
-    Parameters:
-        1: code - [str] The raw text from the scanner or the keyboard.
-    Returns: [str] The cleaned code ("" if nothing is left).
-    """
     return _CONTROL.sub("", code or "").strip()
 
 
+# Description: Works out the next free STJ part number by finding the highest one in use.
+#     For example, if STJ-000010 is the highest, it returns "STJ-000011".
+#     Used by create_part() when the person leaves Part number blank.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [str] The next part number, e.g. "STJ-000011".
 def next_part_no(conn: sqlite3.Connection) -> str:
-    """
-    Description: Works out the next free STJ part number by finding the highest one in use.
-        For example, if STJ-000010 is the highest, it returns "STJ-000011".
-        Used by create_part() when the person leaves Part number blank.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [str] The next part number, e.g. "STJ-000011".
-    """
     prefix = get_setting(conn, "part_no_prefix")
     digits = int(get_setting(conn, "part_no_digits"))
     rows = conn.execute(
@@ -124,15 +116,13 @@ def next_part_no(conn: sqlite3.Connection) -> str:
     return f"{prefix}{highest + 1:0{digits}d}"
 
 
+# Description: Decides the stock color for a quantity: red (out), amber (low) or green (ok).
+#     For example, the activity log and parts library color each row with this.
+# Parameters:
+#     1: qty - [int] How many are on hand.
+#     2: min_qty - [int or None] The reorder point. None means no minimum is set.
+# Returns: [str] "out" when qty is 0, "low" when qty is at or below min_qty, otherwise "ok".
 def stock_status(qty: int, min_qty: int | None) -> str:
-    """
-    Description: Decides the stock color for a quantity: red (out), amber (low) or green (ok).
-        For example, the activity log and parts library color each row with this.
-    Parameters:
-        1: qty - [int] How many are on hand.
-        2: min_qty - [int or None] The reorder point. None means no minimum is set.
-    Returns: [str] "out" when qty is 0, "low" when qty is at or below min_qty, otherwise "ok".
-    """
     if qty <= 0:
         return "out"
     if min_qty is not None and qty <= min_qty:
@@ -146,17 +136,15 @@ def stock_status(qty: int, min_qty: int | None) -> str:
 # Quantities are NOT changed here; see Stock moves below.
 # ======================================================================================
 
+# Description: Checks and tidies the fields typed on the Add part / Edit screens before they
+#     are saved: trims spaces from text, turns number boxes into whole numbers, and blocks
+#     negative numbers or a min larger than the max. Unknown fields are ignored.
+#     Used by create_part() and update_part().
+# Parameters:
+#     1: data - [dict] Field name -> value, as sent by the screen.
+# Returns: [dict] Only the known part fields, cleaned and ready to save.
+# Raises: ServiceError with a plain message if a value isn't allowed.
 def _clean_part_data(data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Description: Checks and tidies the fields typed on the Add part / Edit screens before they
-        are saved: trims spaces from text, turns number boxes into whole numbers, and blocks
-        negative numbers or a min larger than the max. Unknown fields are ignored.
-        Used by create_part() and update_part().
-    Parameters:
-        1: data - [dict] Field name -> value, as sent by the screen.
-    Returns: [dict] Only the known part fields, cleaned and ready to save.
-    Raises: ServiceError with a plain message if a value isn't allowed.
-    """
     out: dict[str, Any] = {}
     for key in PART_FIELDS:
         if key not in data:
@@ -178,28 +166,26 @@ def _clean_part_data(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Description: Adds a new part. It assigns the next STJ number if none was given, registers
+#     the part number as a barcode, registers any extra barcodes (e.g. the manufacturer code
+#     that was scanned on the Unregistered screen), logs an "Added" line in the activity log,
+#     and adds the part to the search index. All of this happens together or not at all.
+#     For example, saving the Add part screen calls this through POST /api/parts.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: data - [dict] The part's fields (name is required; see PART_FIELDS). "qty" is the
+#        starting quantity and "part_no" is optional.
+#     3: who - [str] Initials of the person adding it. Stored in capitals.
+#     4: barcodes - [list of str] Optional extra barcodes that should open this part.
+# Returns: [dict] The saved part, same shape as get_part().
+# Raises: ServiceError if the name or initials are missing, a description is required but
+#     blank, or a barcode already belongs to another part.
 def create_part(
     conn: sqlite3.Connection,
     data: dict[str, Any],
     who: str,
     barcodes: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """
-    Description: Adds a new part. It assigns the next STJ number if none was given, registers
-        the part number as a barcode, registers any extra barcodes (e.g. the manufacturer code
-        that was scanned on the Unregistered screen), logs an "Added" line in the activity log,
-        and adds the part to the search index. All of this happens together or not at all.
-        For example, saving the Add part screen calls this through POST /api/parts.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: data - [dict] The part's fields (name is required; see PART_FIELDS). "qty" is the
-           starting quantity and "part_no" is optional.
-        3: who - [str] Initials of the person adding it. Stored in capitals.
-        4: barcodes - [list of str] Optional extra barcodes that should open this part.
-    Returns: [dict] The saved part, same shape as get_part().
-    Raises: ServiceError if the name or initials are missing, a description is required but
-        blank, or a barcode already belongs to another part.
-    """
     who = (who or "").strip().upper()
     if not who:
         raise ServiceError("Enter your initials.")
@@ -235,19 +221,17 @@ def create_part(
     return get_part(conn, part_id)
 
 
+# Description: Changes some of a part's details (not its quantity; use check_in, check_out
+#     or adjust_count for that), logs which fields changed, and refreshes the search index.
+#     For example, renaming a part from its edit screen calls this through PATCH /api/parts/ID.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: data - [dict] Only the fields to change, e.g. {"room": "Dryer basement"}.
+#     4: who - [str] Initials of the person making the change.
+# Returns: [dict] The updated part, same shape as get_part().
+# Raises: NotFound if the part doesn't exist; ServiceError for a blank name or bad number.
 def update_part(conn: sqlite3.Connection, part_id: int, data: dict[str, Any], who: str) -> dict[str, Any]:
-    """
-    Description: Changes some of a part's details (not its quantity; use check_in, check_out
-        or adjust_count for that), logs which fields changed, and refreshes the search index.
-        For example, renaming a part from its edit screen calls this through PATCH /api/parts/ID.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: data - [dict] Only the fields to change, e.g. {"room": "Dryer basement"}.
-        4: who - [str] Initials of the person making the change.
-    Returns: [dict] The updated part, same shape as get_part().
-    Raises: NotFound if the part doesn't exist; ServiceError for a blank name or bad number.
-    """
     fields = _clean_part_data(data)
     if "name" in fields and not fields["name"]:
         raise ServiceError("Give the part a name.")
@@ -265,18 +249,16 @@ def update_part(conn: sqlite3.Connection, part_id: int, data: dict[str, Any], wh
     return get_part(conn, part_id)
 
 
+# Description: Attaches another barcode to an existing part so scanning it opens that part.
+#     For example, the "Add barcode" button on the part page uses it for a manufacturer's code.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: code - [str] The barcode as scanned or typed.
+#     4: kind - [str] "mfr" (manufacturer), "internal" (our label) or "other".
+# Returns: Nothing. Adding a code the part already has does nothing.
+# Raises: ServiceError if the code is blank or belongs to a different part.
 def add_barcode(conn: sqlite3.Connection, part_id: int, code: str, kind: str = "other") -> None:
-    """
-    Description: Attaches another barcode to an existing part so scanning it opens that part.
-        For example, the "Add barcode" button on the part page uses it for a manufacturer's code.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: code - [str] The barcode as scanned or typed.
-        4: kind - [str] "mfr" (manufacturer), "internal" (our label) or "other".
-    Returns: Nothing. Adding a code the part already has does nothing.
-    Raises: ServiceError if the code is blank or belongs to a different part.
-    """
     code = normalize_code(code)
     if not code:
         raise ServiceError("Scan or type a barcode.")
@@ -289,16 +271,14 @@ def add_barcode(conn: sqlite3.Connection, part_id: int, code: str, kind: str = "
             conn.execute("INSERT INTO barcodes(code, part_id, kind) VALUES (?, ?, ?)", (code, part_id, kind))
 
 
+# Description: Finds the part a scanned barcode belongs to. If that part was merged into
+#     another one, it follows the merge so old labels still open the right part.
+#     For example, every scan on the home screen goes through this (GET /api/scan/CODE).
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: code - [str] The barcode as scanned (Enter/Tab are cleaned off).
+# Returns: [dict or None] The part (same shape as get_part()), or None if no part has this code.
 def lookup_code(conn: sqlite3.Connection, code: str) -> dict[str, Any] | None:
-    """
-    Description: Finds the part a scanned barcode belongs to. If that part was merged into
-        another one, it follows the merge so old labels still open the right part.
-        For example, every scan on the home screen goes through this (GET /api/scan/CODE).
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: code - [str] The barcode as scanned (Enter/Tab are cleaned off).
-    Returns: [dict or None] The part (same shape as get_part()), or None if no part has this code.
-    """
     code = normalize_code(code)
     if not code:
         return None
@@ -308,16 +288,14 @@ def lookup_code(conn: sqlite3.Connection, code: str) -> dict[str, Any] | None:
     return get_part(conn, _follow_merge(conn, row["part_id"]))
 
 
+# Description: Given a part ID, returns the ID of the part it was merged into (following
+#     a chain if it was merged more than once). Returns the same ID if it was never merged.
+#     Used by lookup_code().
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+# Returns: [int] The ID of the part that is still in use.
 def _follow_merge(conn: sqlite3.Connection, part_id: int) -> int:
-    """
-    Description: Given a part ID, returns the ID of the part it was merged into (following
-        a chain if it was merged more than once). Returns the same ID if it was never merged.
-        Used by lookup_code().
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-    Returns: [int] The ID of the part that is still in use.
-    """
     seen = set()
     while part_id not in seen:
         seen.add(part_id)
@@ -328,34 +306,30 @@ def _follow_merge(conn: sqlite3.Connection, part_id: int) -> int:
     return part_id
 
 
+# Description: Reads one part's raw database row, or stops with a clear message if it's gone.
+#     Used inside most part functions before they change anything.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+# Returns: [sqlite3.Row] The part's columns.
+# Raises: NotFound if there is no part with that ID.
 def _part_row(conn: sqlite3.Connection, part_id: int) -> sqlite3.Row:
-    """
-    Description: Reads one part's raw database row, or stops with a clear message if it's gone.
-        Used inside most part functions before they change anything.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-    Returns: [sqlite3.Row] The part's columns.
-    Raises: NotFound if there is no part with that ID.
-    """
     row = conn.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
     if not row:
         raise NotFound("That part doesn't exist.")
     return row
 
 
+# Description: Gathers everything the part page shows: the part's fields, its stock color,
+#     all its barcodes, its vendor's details and its last 20 activity lines.
+#     For example, opening a part page calls this through GET /api/parts/ID.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+# Returns: [dict] The part's fields plus "status", "barcodes" (list), "vendor" (dict or None)
+#     and "activity" (list, newest first).
+# Raises: NotFound if there is no part with that ID.
 def get_part(conn: sqlite3.Connection, part_id: int) -> dict[str, Any]:
-    """
-    Description: Gathers everything the part page shows: the part's fields, its stock color,
-        all its barcodes, its vendor's details and its last 20 activity lines.
-        For example, opening a part page calls this through GET /api/parts/ID.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-    Returns: [dict] The part's fields plus "status", "barcodes" (list), "vendor" (dict or None)
-        and "activity" (list, newest first).
-    Raises: NotFound if there is no part with that ID.
-    """
     row = _part_row(conn, part_id)
     part = dict(row)
     part["status"] = stock_status(part["qty"], part["min_qty"])
@@ -378,16 +352,14 @@ def get_part(conn: sqlite3.Connection, part_id: int) -> dict[str, Any]:
 # Every change to a quantity also writes an activity line, in the same transaction.
 # ======================================================================================
 
+# Description: Turns a typed quantity into a whole number and rejects negatives.
+#     Used for quantities, counts and copies.
+# Parameters:
+#     1: value - [any] What was typed or sent, e.g. "3" or 3.
+#     2: label - [str] What to call it in the error message, e.g. "Quantity".
+# Returns: [int] The whole number.
+# Raises: ServiceError if it isn't a whole number or is negative.
 def _whole(value: Any, label: str) -> int:
-    """
-    Description: Turns a typed quantity into a whole number and rejects negatives.
-        Used for quantities, counts and copies.
-    Parameters:
-        1: value - [any] What was typed or sent, e.g. "3" or 3.
-        2: label - [str] What to call it in the error message, e.g. "Quantity".
-    Returns: [int] The whole number.
-    Raises: ServiceError if it isn't a whole number or is negative.
-    """
     try:
         n = int(value)
     except (TypeError, ValueError):
@@ -397,23 +369,21 @@ def _whole(value: Any, label: str) -> int:
     return n
 
 
+# Description: The shared engine behind check out and check in. It checks the quantity and
+#     initials, makes sure stock never goes below zero, updates the on-hand count and writes
+#     one activity line, all in one step so two scans at once can't get the count wrong.
+#     Called only by check_out() and check_in().
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: qty - [int] How many are moving (must be 1 or more).
+#     4: who - [str] Initials of the person taking or returning it.
+#     5: ref - [str] Work order or PO number (optional).
+#     6: action - [str] "out" or "in".
+# Returns: [dict] The part after the move, same shape as get_part().
+# Raises: ServiceError if the quantity or initials are missing, the part was merged, or
+#     there aren't enough on hand.
 def _move(conn, part_id, qty, who, ref, action) -> dict[str, Any]:
-    """
-    Description: The shared engine behind check out and check in. It checks the quantity and
-        initials, makes sure stock never goes below zero, updates the on-hand count and writes
-        one activity line, all in one step so two scans at once can't get the count wrong.
-        Called only by check_out() and check_in().
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: qty - [int] How many are moving (must be 1 or more).
-        4: who - [str] Initials of the person taking or returning it.
-        5: ref - [str] Work order or PO number (optional).
-        6: action - [str] "out" or "in".
-    Returns: [dict] The part after the move, same shape as get_part().
-    Raises: ServiceError if the quantity or initials are missing, the part was merged, or
-        there aren't enough on hand.
-    """
     qty = _whole(qty, "Quantity")
     if qty == 0:
         raise ServiceError("Quantity must be at least 1.")
@@ -436,51 +406,45 @@ def _move(conn, part_id, qty, who, ref, action) -> dict[str, Any]:
     return get_part(conn, part_id)
 
 
+# Description: Takes parts out of stock and logs who took them and for which work order.
+#     For example, "Confirm check out" on the check-out screen calls this
+#     through POST /api/parts/ID/checkout.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: qty - [int] How many are being taken.
+#     4: who - [str] Initials of the person taking them.
+#     5: ref - [str] Work order or PO number, e.g. "WO 24-1187" (optional).
+# Returns: [dict] The part after the change, same shape as get_part().
+# Raises: ServiceError if there aren't enough on hand or initials are missing.
 def check_out(conn, part_id: int, qty: int, who: str, ref: str = "") -> dict[str, Any]:
-    """
-    Description: Takes parts out of stock and logs who took them and for which work order.
-        For example, "Confirm check out" on the check-out screen calls this
-        through POST /api/parts/ID/checkout.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: qty - [int] How many are being taken.
-        4: who - [str] Initials of the person taking them.
-        5: ref - [str] Work order or PO number, e.g. "WO 24-1187" (optional).
-    Returns: [dict] The part after the change, same shape as get_part().
-    Raises: ServiceError if there aren't enough on hand or initials are missing.
-    """
     return _move(conn, part_id, qty, who, ref, "out")
 
 
+# Description: Adds parts back into stock (a return, or a new delivery) and logs it.
+#     For example, "Confirm check in" calls this through POST /api/parts/ID/checkin.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: qty - [int] How many are coming in.
+#     4: who - [str] Initials of the person checking them in.
+#     5: ref - [str] PO number for a delivery (optional).
+# Returns: [dict] The part after the change, same shape as get_part().
 def check_in(conn, part_id: int, qty: int, who: str, ref: str = "") -> dict[str, Any]:
-    """
-    Description: Adds parts back into stock (a return, or a new delivery) and logs it.
-        For example, "Confirm check in" calls this through POST /api/parts/ID/checkin.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: qty - [int] How many are coming in.
-        4: who - [str] Initials of the person checking them in.
-        5: ref - [str] PO number for a delivery (optional).
-    Returns: [dict] The part after the change, same shape as get_part().
-    """
     return _move(conn, part_id, qty, who, ref, "in")
 
 
+# Description: Sets the on-hand count to what was actually counted on the shelf (a cycle
+#     count correction), and logs the difference.
+#     For example, when a supervisor finds 3 on the shelf but the app says 5.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: new_qty - [int] The real count.
+#     4: who - [str] Initials of the person who counted.
+#     5: note - [str] Why it changed, e.g. "Cycle count" (optional).
+# Returns: [dict] The part after the change, same shape as get_part().
 def adjust_count(conn, part_id: int, new_qty: int, who: str, note: str = "") -> dict[str, Any]:
-    """
-    Description: Sets the on-hand count to what was actually counted on the shelf (a cycle
-        count correction), and logs the difference.
-        For example, when a supervisor finds 3 on the shelf but the app says 5.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: new_qty - [int] The real count.
-        4: who - [str] Initials of the person who counted.
-        5: note - [str] Why it changed, e.g. "Cycle count" (optional).
-    Returns: [dict] The part after the change, same shape as get_part().
-    """
     new_qty = _whole(new_qty, "Count")
     with transaction(conn):
         part = _part_row(conn, part_id)
@@ -492,20 +456,18 @@ def adjust_count(conn, part_id: int, new_qty: int, who: str, note: str = "") -> 
     return get_part(conn, part_id)
 
 
+# Description: Combines a duplicate part into the one to keep. The duplicate's barcodes move
+#     over (so its old labels keep working), the stock is added together, both parts get an
+#     activity line, and the duplicate disappears from search.
+#     For example, if "Bearing 6204" and "Bearing, ball, 6204-2RS" were entered separately.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: keep_id - [int] The part to keep.
+#     3: remove_id - [int] The duplicate to fold into it.
+#     4: who - [str] Initials of the person merging.
+# Returns: [dict] The kept part after the merge, same shape as get_part().
+# Raises: ServiceError if both IDs are the same or either part was already merged.
 def merge_parts(conn, keep_id: int, remove_id: int, who: str) -> dict[str, Any]:
-    """
-    Description: Combines a duplicate part into the one to keep. The duplicate's barcodes move
-        over (so its old labels keep working), the stock is added together, both parts get an
-        activity line, and the duplicate disappears from search.
-        For example, if "Bearing 6204" and "Bearing, ball, 6204-2RS" were entered separately.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: keep_id - [int] The part to keep.
-        3: remove_id - [int] The duplicate to fold into it.
-        4: who - [str] Initials of the person merging.
-    Returns: [dict] The kept part after the merge, same shape as get_part().
-    Raises: ServiceError if both IDs are the same or either part was already merged.
-    """
     if keep_id == remove_id:
         raise ServiceError("Pick two different parts.")
     with transaction(conn):
@@ -534,16 +496,14 @@ def merge_parts(conn, keep_id: int, remove_id: int, who: str) -> dict[str, Any]:
 # The parts library search: full-text index (parts_fts), filters, sorting and typo fixes.
 # ======================================================================================
 
+# Description: Refreshes one part's entry in the search index (all its text fields, barcodes
+#     and vendor name), or removes it if the part was merged. Called after every add or edit
+#     so the parts library always finds the latest wording.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+# Returns: Nothing.
 def _index_part(conn: sqlite3.Connection, part_id: int) -> None:
-    """
-    Description: Refreshes one part's entry in the search index (all its text fields, barcodes
-        and vendor name), or removes it if the part was merged. Called after every add or edit
-        so the parts library always finds the latest wording.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-    Returns: Nothing.
-    """
     p = conn.execute(
         "SELECT p.*, COALESCE(v.name, '') AS vendor FROM parts p LEFT JOIN vendors v ON v.id = p.vendor_id WHERE p.id = ?",
         (part_id,),
@@ -569,6 +529,21 @@ SORTS = {
 }
 
 
+# Description: The parts library search. Every word typed must match some field (the start of
+#     a word is enough, so "solen" finds "solenoid"). If nothing matches, it tries close
+#     spellings so typos still work ("quik conect" finds "quick connect"). Also checks whether
+#     the text is an exact barcode, so scanning into the search box can open the part.
+#     For example, typing in the Parts library box calls this through GET /api/parts?q=...
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: q - [str] The search text or a scanned barcode. Blank lists every part.
+#     3: room - [str] Only parts in this room (optional).
+#     4: brand - [str] Only parts of this brand (optional).
+#     5: stock - [str] "out", "low", "ok", or "" for all.
+#     6: sort - [str] "name", "stock" (lowest first), "used" (recently used) or "added".
+#     7: limit - [int] Most rows to return.
+# Returns: [dict] "results" (list of parts), "exact" (the part if q was an exact barcode,
+#     else None) and "did_you_mean" (the corrected words, or None).
 def search_parts(
     conn: sqlite3.Connection,
     q: str = "",
@@ -579,23 +554,6 @@ def search_parts(
     sort: str = "name",
     limit: int = 100,
 ) -> dict[str, Any]:
-    """
-    Description: The parts library search. Every word typed must match some field (the start of
-        a word is enough, so "solen" finds "solenoid"). If nothing matches, it tries close
-        spellings so typos still work ("quik conect" finds "quick connect"). Also checks whether
-        the text is an exact barcode, so scanning into the search box can open the part.
-        For example, typing in the Parts library box calls this through GET /api/parts?q=...
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: q - [str] The search text or a scanned barcode. Blank lists every part.
-        3: room - [str] Only parts in this room (optional).
-        4: brand - [str] Only parts of this brand (optional).
-        5: stock - [str] "out", "low", "ok", or "" for all.
-        6: sort - [str] "name", "stock" (lowest first), "used" (recently used) or "added".
-        7: limit - [int] Most rows to return.
-    Returns: [dict] "results" (list of parts), "exact" (the part if q was an exact barcode,
-        else None) and "did_you_mean" (the corrected words, or None).
-    """
     q = normalize_code(q)
     exact = lookup_code(conn, q) if q else None
     words = [w for w in _WORD.findall(q.lower())]
@@ -609,19 +567,17 @@ def search_parts(
     return {"exact": exact, "results": rows, "did_you_mean": suggested}
 
 
+# Description: Runs the actual search query for search_parts(), with filters and sorting.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: words - [list of str] Lowercase search words.
+#     3: room - [str] Room filter, or "".
+#     4: brand - [str] Brand filter, or "".
+#     5: stock - [str] "out", "low", "ok" or "".
+#     6: sort - [str] One of the keys in SORTS.
+#     7: limit - [int] Most rows to return.
+# Returns: [list of dict] Matching parts with a "status" color each.
 def _search(conn, words, room, brand, stock, sort, limit) -> list[dict[str, Any]]:
-    """
-    Description: Runs the actual search query for search_parts(), with filters and sorting.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: words - [list of str] Lowercase search words.
-        3: room - [str] Room filter, or "".
-        4: brand - [str] Brand filter, or "".
-        5: stock - [str] "out", "low", "ok" or "".
-        6: sort - [str] One of the keys in SORTS.
-        7: limit - [int] Most rows to return.
-    Returns: [list of dict] Matching parts with a "status" color each.
-    """
     where = ["p.merged_into IS NULL"]
     args: list[Any] = []
     if words:
@@ -654,16 +610,14 @@ def _search(conn, words, room, brand, stock, sort, limit) -> list[dict[str, Any]
     return out
 
 
+# Description: Fixes likely typos by comparing each search word with the words already used in
+#     part names, brands, sizes, usage and part numbers.
+#     For example, ["quik", "conect"] becomes ["quick", "connect"].
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: words - [list of str] The search words as typed.
+# Returns: [list of str] The words with close matches swapped in.
 def _respell(conn, words: list[str]) -> list[str]:
-    """
-    Description: Fixes likely typos by comparing each search word with the words already used in
-        part names, brands, sizes, usage and part numbers.
-        For example, ["quik", "conect"] becomes ["quick", "connect"].
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: words - [list of str] The search words as typed.
-    Returns: [list of str] The words with close matches swapped in.
-    """
     vocab: set[str] = set()
     for r in conn.execute("SELECT name, brand, size_spec, usage, mfr_part_no FROM parts WHERE merged_into IS NULL"):
         for value in r:
@@ -678,22 +632,18 @@ def _respell(conn, words: list[str]) -> list[str]:
     return fixed
 
 
+# Description: Lists the rooms and brands in use, for the filter dropdowns and for the
+#     type-ahead suggestions on the Add part screen.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [dict] "rooms" and "brands", each a sorted list of names.
 def facets(conn) -> dict[str, list[str]]:
-    """
-    Description: Lists the rooms and brands in use, for the filter dropdowns and for the
-        type-ahead suggestions on the Add part screen.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [dict] "rooms" and "brands", each a sorted list of names.
-    """
+    # Description: Lists the different values used in one part column, skipping blanks and
+    #     merged parts. Only used inside facets().
+    # Parameters:
+    #     1: col - [str] The column name, "room" or "brand".
+    # Returns: [list of str] The values, sorted alphabetically.
     def distinct(col):
-        """
-        Description: Lists the different values used in one part column, skipping blanks and
-            merged parts. Only used inside facets().
-        Parameters:
-            1: col - [str] The column name, "room" or "brand".
-        Returns: [list of str] The values, sorted alphabetically.
-        """
         return [r[0] for r in conn.execute(
             f"SELECT DISTINCT {col} FROM parts WHERE merged_into IS NULL AND {col} != '' ORDER BY {col} COLLATE NOCASE"
         )]
@@ -705,18 +655,16 @@ def facets(conn) -> dict[str, list[str]]:
 # The activity log and the numbers on the home screen tiles.
 # ======================================================================================
 
+# Description: Reads the activity log (check outs, check ins, additions, count changes),
+#     newest first, with each line's stock color and the vendor's phone for reordering.
+#     For example, the home screen shows the last 12; the Activity log shows up to 500.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: limit - [int] Most lines to return.
+#     3: to_order_only - [bool] True to show only lines that left a part out or low.
+#     4: day - [str or None] Only this date, as "YYYY-MM-DD" (optional).
+# Returns: [list of dict] Activity lines with part name, who, WO/PO, qty left and status.
 def recent_activity(conn, limit: int = 50, to_order_only: bool = False, day: str | None = None) -> list[dict[str, Any]]:
-    """
-    Description: Reads the activity log (check outs, check ins, additions, count changes),
-        newest first, with each line's stock color and the vendor's phone for reordering.
-        For example, the home screen shows the last 12; the Activity log shows up to 500.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: limit - [int] Most lines to return.
-        3: to_order_only - [bool] True to show only lines that left a part out or low.
-        4: day - [str or None] Only this date, as "YYYY-MM-DD" (optional).
-    Returns: [list of dict] Activity lines with part name, who, WO/PO, qty left and status.
-    """
     where, args = ["a.action IN ('in', 'out', 'added', 'adjust', 'merge')"], []
     if day:
         where.append("date(a.at) = ?")
@@ -736,14 +684,12 @@ def recent_activity(conn, limit: int = 50, to_order_only: bool = False, day: str
     return out
 
 
+# Description: Counts for the home screen tiles: total parts, how many are out,
+#     how many are low, and how many vendors.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [dict] "parts", "out", "low" and "vendors" as whole numbers.
 def summary(conn) -> dict[str, int]:
-    """
-    Description: Counts for the home screen tiles: total parts, how many are out,
-        how many are low, and how many vendors.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [dict] "parts", "out", "low" and "vendors" as whole numbers.
-    """
     row = conn.execute(
         "SELECT COUNT(*) AS parts,"
         " SUM(qty <= 0) AS out_of_stock,"
@@ -762,16 +708,14 @@ def summary(conn) -> dict[str, int]:
 VENDOR_FIELDS = ("name", "rep", "phone", "email", "after_hours", "website", "account_no", "lead_time", "notes")
 
 
+# Description: Adds a vendor to the vendor list. Names must be unique (ignoring capitals).
+#     For example, "+ New vendor..." on the Add part screen and the Vendors page use it.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: data - [dict] The vendor's fields (see VENDOR_FIELDS); "name" is required.
+# Returns: [dict] The saved vendor, same shape as get_vendor().
+# Raises: ServiceError if the name is blank or already in the list.
 def create_vendor(conn, data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Description: Adds a vendor to the vendor list. Names must be unique (ignoring capitals).
-        For example, "+ New vendor..." on the Add part screen and the Vendors page use it.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: data - [dict] The vendor's fields (see VENDOR_FIELDS); "name" is required.
-    Returns: [dict] The saved vendor, same shape as get_vendor().
-    Raises: ServiceError if the name is blank or already in the list.
-    """
     fields = {k: (data.get(k) or "").strip() for k in VENDOR_FIELDS}
     if not fields["name"]:
         raise ServiceError("Give the vendor a name.")
@@ -784,15 +728,13 @@ def create_vendor(conn, data: dict[str, Any]) -> dict[str, Any]:
     return get_vendor(conn, cur.lastrowid)
 
 
+# Description: Reads one vendor's details and the parts bought from them.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: vendor_id - [int] The vendor's database ID.
+# Returns: [dict] The vendor's fields plus "parts" (list of their parts with stock).
+# Raises: NotFound if the vendor doesn't exist.
 def get_vendor(conn, vendor_id: int) -> dict[str, Any]:
-    """
-    Description: Reads one vendor's details and the parts bought from them.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: vendor_id - [int] The vendor's database ID.
-    Returns: [dict] The vendor's fields plus "parts" (list of their parts with stock).
-    Raises: NotFound if the vendor doesn't exist.
-    """
     row = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
     if not row:
         raise NotFound("That vendor doesn't exist.")
@@ -804,15 +746,13 @@ def get_vendor(conn, vendor_id: int) -> dict[str, Any]:
     return v
 
 
+# Description: Lists vendors, optionally filtered by name, rep or phone, with how many
+#     parts each one supplies.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: q - [str] Text to look for (optional; blank lists all).
+# Returns: [list of dict] Vendors sorted by name, each with "part_count".
 def list_vendors(conn, q: str = "") -> list[dict[str, Any]]:
-    """
-    Description: Lists vendors, optionally filtered by name, rep or phone, with how many
-        parts each one supplies.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: q - [str] Text to look for (optional; blank lists all).
-    Returns: [list of dict] Vendors sorted by name, each with "part_count".
-    """
     like = f"%{q.strip()}%"
     return [dict(r) for r in conn.execute(
         "SELECT v.*, (SELECT COUNT(*) FROM parts p WHERE p.vendor_id = v.id AND p.merged_into IS NULL) AS part_count"
@@ -821,28 +761,24 @@ def list_vendors(conn, q: str = "") -> list[dict[str, Any]]:
     )]
 
 
+# Description: Lists the people shown as one-tap buttons on the check-out screen.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [list of dict] Active people sorted by initials.
 def list_people(conn) -> list[dict[str, Any]]:
-    """
-    Description: Lists the people shown as one-tap buttons on the check-out screen.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [list of dict] Active people sorted by initials.
-    """
     return [dict(r) for r in conn.execute("SELECT * FROM people WHERE active = 1 ORDER BY initials")]
 
 
+# Description: Adds a person to the check-out list, or updates their name and role if their
+#     initials are already there.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: initials - [str] 1 to 4 letters, e.g. "AB". Stored in capitals.
+#     3: name - [str] Full name (optional).
+#     4: role - [str] Shown on their button, e.g. "Day shift" (optional).
+# Returns: [dict] The saved person.
+# Raises: ServiceError if the initials aren't 1 to 4 letters.
 def add_person(conn, initials: str, name: str = "", role: str = "") -> dict[str, Any]:
-    """
-    Description: Adds a person to the check-out list, or updates their name and role if their
-        initials are already there.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: initials - [str] 1 to 4 letters, e.g. "AB". Stored in capitals.
-        3: name - [str] Full name (optional).
-        4: role - [str] Shown on their button, e.g. "Day shift" (optional).
-    Returns: [dict] The saved person.
-    Raises: ServiceError if the initials aren't 1 to 4 letters.
-    """
     initials = (initials or "").strip().upper()
     if not re.fullmatch(r"[A-Z]{1,4}", initials):
         raise ServiceError("Initials must be 1 to 4 letters.")
@@ -860,45 +796,39 @@ def add_person(conn, initials: str, name: str = "", role: str = "") -> dict[str,
 # If the printer isn't available, jobs wait in the queue instead of being lost.
 # ======================================================================================
 
+# Description: Lists the label sizes shown on the print screen, in display order.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [list of dict] Each size's name, description, width_in, height_in and whether the
+#     part name and location print by default.
 def list_presets(conn) -> list[dict[str, Any]]:
-    """
-    Description: Lists the label sizes shown on the print screen, in display order.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [list of dict] Each size's name, description, width_in, height_in and whether the
-        part name and location print by default.
-    """
     return [dict(r) for r in conn.execute("SELECT * FROM label_presets ORDER BY sort, id")]
 
 
+# Description: Reads one label size.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: preset_id - [int] The label size's database ID.
+# Returns: [dict] The label size's fields.
+# Raises: NotFound if it doesn't exist.
 def get_preset(conn, preset_id: int) -> dict[str, Any]:
-    """
-    Description: Reads one label size.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: preset_id - [int] The label size's database ID.
-    Returns: [dict] The label size's fields.
-    Raises: NotFound if it doesn't exist.
-    """
     row = conn.execute("SELECT * FROM label_presets WHERE id = ?", (preset_id,)).fetchone()
     if not row:
         raise NotFound("That label size doesn't exist.")
     return dict(row)
 
 
+# Description: Adds a new label size, or changes an existing one, after checking the name
+#     and that the size is between 0.25 and 4 inches.
+#     For example, adding a "1 x 0.5 in" size to match new label tape.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: data - [dict] "name", "width_in", "height_in", and optionally "description",
+#        "show_name", "show_location" and "sort".
+#     3: preset_id - [int or None] The size to change, or None to add a new one.
+# Returns: [dict] The saved label size.
+# Raises: ServiceError for a blank or duplicate name or a size out of range.
 def save_preset(conn, data: dict[str, Any], preset_id: int | None = None) -> dict[str, Any]:
-    """
-    Description: Adds a new label size, or changes an existing one, after checking the name
-        and that the size is between 0.25 and 4 inches.
-        For example, adding a "1 x 0.5 in" size to match new label tape.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: data - [dict] "name", "width_in", "height_in", and optionally "description",
-           "show_name", "show_location" and "sort".
-        3: preset_id - [int or None] The size to change, or None to add a new one.
-    Returns: [dict] The saved label size.
-    Raises: ServiceError for a blank or duplicate name or a size out of range.
-    """
     name = (data.get("name") or "").strip()
     if not name:
         raise ServiceError("Give the label size a name.")
@@ -926,20 +856,18 @@ def save_preset(conn, data: dict[str, Any], preset_id: int | None = None) -> dic
     return get_preset(conn, preset_id)
 
 
+# Description: Draws a part's label as a black-and-white image at the printer's resolution.
+#     The same image is used for the preview, the PDF and the printer, so what you see is
+#     what prints.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: preset_id - [int] The label size to use.
+#     4: show_name - [bool or None] Print the part name; None uses the size's default.
+#     5: show_location - [bool or None] Print the location; None uses the size's default.
+# Returns: [PIL.Image.Image] The label image.
+# Raises: ServiceError if the barcode won't fit (e.g. a long code on a small label).
 def label_image(conn, part_id: int, preset_id: int, show_name: bool | None = None, show_location: bool | None = None):
-    """
-    Description: Draws a part's label as a black-and-white image at the printer's resolution.
-        The same image is used for the preview, the PDF and the printer, so what you see is
-        what prints.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: preset_id - [int] The label size to use.
-        4: show_name - [bool or None] Print the part name; None uses the size's default.
-        5: show_location - [bool or None] Print the location; None uses the size's default.
-    Returns: [PIL.Image.Image] The label image.
-    Raises: ServiceError if the barcode won't fit (e.g. a long code on a small label).
-    """
     from . import labels
 
     part = _part_row(conn, part_id)
@@ -957,16 +885,14 @@ def label_image(conn, part_id: int, preset_id: int, show_name: bool | None = Non
         raise ServiceError(str(exc)) from None
 
 
+# Description: Reports whether printing is possible on this PC, which printers Windows
+#     knows about, which one will be used, and how many jobs are waiting.
+#     For example, the print screen's green "Brady BMP71 ready" badge comes from this.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [dict] "can_print" (bool), "printers" (list), "selected" (str or None),
+#     "saved" (str) and "waiting" (int).
 def printer_status(conn) -> dict[str, Any]:
-    """
-    Description: Reports whether printing is possible on this PC, which printers Windows
-        knows about, which one will be used, and how many jobs are waiting.
-        For example, the print screen's green "Brady BMP71 ready" badge comes from this.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [dict] "can_print" (bool), "printers" (list), "selected" (str or None),
-        "saved" (str) and "waiting" (int).
-    """
     from . import printing
 
     saved = get_setting(conn, "label_printer")
@@ -979,16 +905,14 @@ def printer_status(conn) -> dict[str, Any]:
     }
 
 
+# Description: Tries to print one queued job. On success the job is marked printed; on
+#     failure the reason (printer off, out of tape, not on Windows) is saved on the job and
+#     it stays in the queue. Used by print_label() and retry_print_jobs().
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: job - [sqlite3.Row] The print_jobs row to print.
+# Returns: [tuple of (bool, str)] (True, "") if it printed, or (False, reason) if not.
 def _run_job(conn, job: sqlite3.Row) -> tuple[bool, str]:
-    """
-    Description: Tries to print one queued job. On success the job is marked printed; on
-        failure the reason (printer off, out of tape, not on Windows) is saved on the job and
-        it stays in the queue. Used by print_label() and retry_print_jobs().
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: job - [sqlite3.Row] The print_jobs row to print.
-    Returns: [tuple of (bool, str)] (True, "") if it printed, or (False, reason) if not.
-    """
     from . import printing
 
     preset = get_preset(conn, job["preset_id"])
@@ -1008,23 +932,21 @@ def _run_job(conn, job: sqlite3.Row) -> tuple[bool, str]:
     return True, ""
 
 
+# Description: Prints labels for a part right away, or keeps the job in the print queue if
+#     the printer isn't available, so nothing is lost.
+#     For example, the "Print 1 label" button calls this through POST /api/parts/ID/print.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: part_id - [int] The part's database ID.
+#     3: preset_id - [int] The label size.
+#     4: copies - [int] How many labels, 1 to 200.
+#     5: show_name - [bool] Print the part name.
+#     6: show_location - [bool] Print the location.
+#     7: who - [str] Initials of the person printing (optional).
+# Returns: [dict] "printed" (bool), "queued" (bool), "error" (the reason it didn't print,
+#     or "") and "job_id".
+# Raises: ServiceError for a bad number of copies or a label the barcode won't fit on.
 def print_label(conn, part_id: int, preset_id: int, copies: int, show_name: bool, show_location: bool, who: str = "") -> dict[str, Any]:
-    """
-    Description: Prints labels for a part right away, or keeps the job in the print queue if
-        the printer isn't available, so nothing is lost.
-        For example, the "Print 1 label" button calls this through POST /api/parts/ID/print.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: part_id - [int] The part's database ID.
-        3: preset_id - [int] The label size.
-        4: copies - [int] How many labels, 1 to 200.
-        5: show_name - [bool] Print the part name.
-        6: show_location - [bool] Print the location.
-        7: who - [str] Initials of the person printing (optional).
-    Returns: [dict] "printed" (bool), "queued" (bool), "error" (the reason it didn't print,
-        or "") and "job_id".
-    Raises: ServiceError for a bad number of copies or a label the barcode won't fit on.
-    """
     copies = _whole(copies, "Copies")
     if not 1 <= copies <= 200:
         raise ServiceError("Copies must be between 1 and 200.")
@@ -1038,31 +960,27 @@ def print_label(conn, part_id: int, preset_id: int, copies: int, show_name: bool
     return {"printed": ok, "queued": not ok, "error": error, "job_id": job["id"]}
 
 
+# Description: Lists print jobs in one state, oldest first, with the part and label size.
+#     For example, the "Waiting to print" page shows the "waiting" ones.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: status - [str] "waiting", "printed" or "cancelled".
+# Returns: [list of dict] The jobs.
 def list_print_jobs(conn, status: str = "waiting") -> list[dict[str, Any]]:
-    """
-    Description: Lists print jobs in one state, oldest first, with the part and label size.
-        For example, the "Waiting to print" page shows the "waiting" ones.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: status - [str] "waiting", "printed" or "cancelled".
-    Returns: [list of dict] The jobs.
-    """
     return [dict(r) for r in conn.execute(
         "SELECT j.*, p.part_no, p.name, l.name AS preset FROM print_jobs j JOIN parts p ON p.id = j.part_id"
         " JOIN label_presets l ON l.id = j.preset_id WHERE j.status = ? ORDER BY j.id", (status,)
     )]
 
 
+# Description: Tries to print every waiting job, oldest first, stopping at the first
+#     failure so the printer isn't sent jobs it can't handle.
+#     For example, the home screen's "Print now" button.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [dict] "printed" (how many printed), "waiting" (how many are left) and
+#     "error" (why it stopped, or "").
 def retry_print_jobs(conn) -> dict[str, Any]:
-    """
-    Description: Tries to print every waiting job, oldest first, stopping at the first
-        failure so the printer isn't sent jobs it can't handle.
-        For example, the home screen's "Print now" button.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-    Returns: [dict] "printed" (how many printed), "waiting" (how many are left) and
-        "error" (why it stopped, or "").
-    """
     printed, last_error = 0, ""
     for job in conn.execute("SELECT * FROM print_jobs WHERE status = 'waiting' ORDER BY id").fetchall():
         ok, err = _run_job(conn, job)
@@ -1074,24 +992,20 @@ def retry_print_jobs(conn) -> dict[str, Any]:
     return {"printed": printed, "waiting": waiting, "error": last_error}
 
 
+# Description: Removes a waiting job from the print queue (it is kept in history as cancelled).
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: job_id - [int] The print job's ID.
+# Returns: Nothing. Jobs that already printed are left alone.
 def cancel_print_job(conn, job_id: int) -> None:
-    """
-    Description: Removes a waiting job from the print queue (it is kept in history as cancelled).
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: job_id - [int] The print job's ID.
-    Returns: Nothing. Jobs that already printed are left alone.
-    """
     conn.execute("UPDATE print_jobs SET status = 'cancelled' WHERE id = ? AND status = 'waiting'", (job_id,))
 
 
+# Description: Remembers which Windows printer to send labels to.
+#     Leave it blank to pick the first printer with "Brady" or "BMP" in its name.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: name - [str] The printer's name exactly as Windows lists it.
+# Returns: Nothing.
 def set_label_printer(conn, name: str) -> None:
-    """
-    Description: Remembers which Windows printer to send labels to.
-        Leave it blank to pick the first printer with "Brady" or "BMP" in its name.
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database (from db.connect).
-        2: name - [str] The printer's name exactly as Windows lists it.
-    Returns: Nothing.
-    """
     set_setting(conn, "label_printer", name.strip())

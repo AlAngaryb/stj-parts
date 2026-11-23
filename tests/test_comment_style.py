@@ -7,15 +7,28 @@ ROOT = pathlib.Path(__file__).resolve().parents[1] / "stjparts"
 NEEDED = ("Description:", "Parameters:", "Returns:")
 
 
-def test_python_functions_have_descriptions():
+def comment_block_above(lines, line_no):
+    """Return the run of # comment lines directly above line `line_no` (1-based)."""
+    block = []
+    i = line_no - 2
+    while i >= 0 and lines[i].strip().startswith("#"):
+        block.insert(0, lines[i].strip())
+        i -= 1
+    return "\n".join(block)
+
+
+def test_python_functions_have_descriptions_above_them():
     missing = []
     for path in ROOT.glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        text = path.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        for node in ast.walk(ast.parse(text)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                doc = ast.get_docstring(node) or ""
-                if not all(word in doc for word in NEEDED):
+                top = min([node.lineno] + [d.lineno for d in node.decorator_list])
+                block = comment_block_above(lines, top)
+                if not all(word in block for word in NEEDED):
                     missing.append(f"{path.name}:{node.lineno} {node.name}")
-    assert not missing, "Add a Description/Parameters/Returns docstring to:\n" + "\n".join(missing)
+    assert not missing, "Add a # Description/Parameters/Returns block above:\n" + "\n".join(missing)
 
 
 def test_javascript_functions_have_descriptions():

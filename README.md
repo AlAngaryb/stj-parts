@@ -63,23 +63,21 @@ Real data lives in `%LOCALAPPDATA%\STJParts` (database `parts.db`). Set `STJ_PAR
 
 ## Comment style
 
-Every function starts with a description in this layout, so you can hover over a function name in
-VS Code and see what it does. A test (`tests/test_comment_style.py`) fails if a function is missing one.
+Every function has a description directly above it (above any `@` decorator line) in this layout.
+A test (`tests/test_comment_style.py`) fails if a function is missing one.
 
-Python (a docstring just under the `def` line):
+Python:
 
 ```python
+# Description: Takes parts out of stock and logs who took them and for which work order.
+#     For example, "Confirm check out" on the check-out screen calls this ...
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database.
+#     2: part_id - [int] The part's database ID.
+#     ...
+# Returns: [dict] The part after the change.
+# Raises: ServiceError if there aren't enough on hand.
 def check_out(conn, part_id, qty, who, ref=""):
-    """
-    Description: Takes parts out of stock and logs who took them and for which work order.
-        For example, "Confirm check out" on the check-out screen calls this ...
-    Parameters:
-        1: conn - [sqlite3.Connection] The open database.
-        2: part_id - [int] The part's database ID.
-        ...
-    Returns: [dict] The part after the change.
-    Raises: ServiceError if there aren't enough on hand.
-    """
 ```
 
 JavaScript (a `/** ... */` block just above the function):

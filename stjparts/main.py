@@ -21,26 +21,22 @@ from . import __version__, config
 from .api import create_app
 
 
+# Description: Checks whether something is already listening on the app's port, which means
+#     STJ Parts is already running.
+# Parameters:
+#     1: port - [int] The port number, normally 8765.
+# Returns: [bool] True if the port is taken.
 def _port_in_use(port: int) -> bool:
-    """
-    Description: Checks whether something is already listening on the app's port, which means
-        STJ Parts is already running.
-    Parameters:
-        1: port - [int] The port number, normally 8765.
-    Returns: [bool] True if the port is taken.
-    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex((config.HOST, port)) == 0
 
 
+# Description: Opens the app in its own window without browser tabs or address bar, using
+#     Edge or Chrome "app mode". Falls back to the normal browser if neither is found.
+# Parameters:
+#     1: url - [str] The app's address, e.g. "http://127.0.0.1:8765/".
+# Returns: Nothing.
 def open_window(url: str) -> None:
-    """
-    Description: Opens the app in its own window without browser tabs or address bar, using
-        Edge or Chrome "app mode". Falls back to the normal browser if neither is found.
-    Parameters:
-        1: url - [str] The app's address, e.g. "http://127.0.0.1:8765/".
-    Returns: Nothing.
-    """
     if sys.platform == "win32":
         candidates = [
             os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
@@ -56,17 +52,15 @@ def open_window(url: str) -> None:
     webbrowser.open(url)
 
 
+# Description: Starts STJ Parts. If it is already running, it just opens another window.
+#     Otherwise it starts the local server and opens the app window. When packaged as an .exe
+#     with no console, output goes to stjparts.log in the data folder.
+#     This is what runs when you double-click STJParts.exe or press F5 in VS Code.
+# Parameters:
+#     1: argv - [list of str or None] Command-line options; None reads the real command line.
+#        Options: --no-open (server only), --port N, --reload (restart on code changes).
+# Returns: Nothing (runs until the app is closed).
 def main(argv: list[str] | None = None) -> None:
-    """
-    Description: Starts STJ Parts. If it is already running, it just opens another window.
-        Otherwise it starts the local server and opens the app window. When packaged as an .exe
-        with no console, output goes to stjparts.log in the data folder.
-        This is what runs when you double-click STJParts.exe or press F5 in VS Code.
-    Parameters:
-        1: argv - [list of str or None] Command-line options; None reads the real command line.
-           Options: --no-open (server only), --port N, --reload (restart on code changes).
-    Returns: Nothing (runs until the app is closed).
-    """
     ap = argparse.ArgumentParser(prog="stjparts", description="STJ Parts tracker")
     ap.add_argument("--no-open", action="store_true", help="don't open the app window")
     ap.add_argument("--port", type=int, default=config.PORT)
@@ -96,13 +90,11 @@ def main(argv: list[str] | None = None) -> None:
         uvicorn.run(create_app(), host=config.HOST, port=args.port, log_level="warning")
 
 
+# Description: Builds a fresh app. Only used by --reload mode, which needs to rebuild the
+#     app each time a code file changes.
+# Parameters: None.
+# Returns: [FastAPI] The app.
 def app_factory():
-    """
-    Description: Builds a fresh app. Only used by --reload mode, which needs to rebuild the
-        app each time a code file changes.
-    Parameters: None.
-    Returns: [FastAPI] The app.
-    """
     return create_app()
 
 

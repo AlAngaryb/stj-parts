@@ -1009,3 +1009,166 @@ def cancel_print_job(conn, job_id: int) -> None:
 # Returns: Nothing.
 def set_label_printer(conn, name: str) -> None:
     set_setting(conn, "label_printer", name.strip())
+
+
+# ======================================================================================
+# EXCEL IMPORT AND EXPORT
+# excel.py reads and writes the spreadsheet; these functions decide what each row means
+# (add, update, skip or fix) and save it. Import always shows a preview first.
+# ======================================================================================
+
+# Part fields an import row can set, besides quantity, vendor and barcodes.
+IMPORT_FIELDS = tuple(f for f in PART_FIELDS if f != "vendor_id")
+
+
+# Description: Works out what importing each spreadsheet row would do, without saving
+#     anything. A row is "add" (new part), "update" (its STJ part no. already exists and some
+#     details differ), "same" (exists, nothing differs), "skip" (looks like a part already in
+#     the app, or repeats an earlier row: same brand and manufacturer part number, or the same
+#     name when there is no part number) or "fix" (a problem to correct in the sheet).
+#     Quantities are never changed on existing parts; a different count is pointed out.
+#     For example, the Import screen shows this as the preview before "Import".
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: rows - [list of dict] Rows from excel.read_parts()["rows"].
+# Returns: [dict] "rows" (each with row, action, name, part_no, detail and, for add/update,
+#     "data" ready to save), "counts" per action, and "new_vendors" (names to be created).
+def plan_import(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    vendors = {r["name"].lower(): r["id"] for r in conn.execute("SELECT id, name FROM vendors")}
+    known = {}
+    for r in conn.execute(
+        "SELECT part_no, brand, mfr_part_no FROM parts WHERE merged_into IS NULL AND mfr_part_no <> ''"
+    ):
+        known[(r["brand"].lower(), r["mfr_part_no"].lower())] = r["part_no"]
+    # Parts with no manufacturer part number (e.g. motors still marked FILL IN) match by name.
+    for r in conn.execute("SELECT part_no, name FROM parts WHERE merged_into IS NULL AND mfr_part_no = ''"):
+        known[("name", r["name"].lower())] = r["part_no"]
+    seen_in_sheet: dict[tuple[str, str], int] = {}
+    need_description = get_setting(conn, "description_required") == "1"
+    new_vendors: dict[str, str] = {}
+    out = []
+    for row in rows:
+        item = {"row": row["row"], "name": row.get("name", ""), "part_no": row.get("part_no", ""), "detail": ""}
+        out.append(item)
+        try:
+            fields = _clean_part_data({k: row[k] for k in IMPORT_FIELDS if k in row})
+            qty = _whole(row.get("qty") or 0, "On hand")
+        except ServiceError as e:
+            item.update(action="fix", detail=str(e))
+            continue
+        if not fields.get("name"):
+            item.update(action="fix", detail="No part name.")
+            continue
+        if need_description and not fields.get("description") and not row.get("part_no"):
+            item.update(action="fix", detail="A description is required (supervisor setting).")
+            continue
+        vendor = row.get("vendor", "")
+        if vendor and vendor.lower() not in vendors:
+            new_vendors.setdefault(vendor.lower(), vendor)
+
+        existing = lookup_code(conn, row["part_no"]) if row.get("part_no") else None
+        if existing:
+            item["part_no"] = existing["part_no"]
+            if vendor:
+                fields["vendor_id"] = vendors.get(vendor.lower())
+            changes = {k: v for k, v in fields.items() if k in row or k == "vendor_id"}
+            changes = {k: v for k, v in changes.items() if (existing.get(k) or None) != (v or None)}
+            if vendor and vendor.lower() not in vendors:
+                changes["vendor_id"] = None  # filled in with the new vendor's ID at import time
+            notes = []
+            if row.get("qty") not in (None, "") and qty != existing["qty"]:
+                notes.append(f"On hand is {existing['qty']} in the app and {qty} in the sheet; import doesn't change counts (use Adjust count).")
+            if changes:
+                labels = ", ".join(k.replace("_qty", "").replace("_id", "").replace("_", " ") for k in changes)
+                item.update(action="update", detail=" ".join([f"Changes {labels}.", *notes]),
+                            data={"id": existing["id"], "fields": changes, "vendor": vendor})
+            else:
+                item.update(action="same", detail=" ".join(["Already up to date.", *notes]))
+            continue
+
+        taken = next((c for c in row.get("barcodes", []) if lookup_code(conn, c)), None)
+        if row.get("part_no"):
+            pn_key = ("part_no", normalize_code(row["part_no"]).lower())
+            if pn_key in seen_in_sheet:
+                item.update(action="skip", detail=f"Same STJ part no. as row {seen_in_sheet[pn_key]}.")
+                continue
+            seen_in_sheet[pn_key] = row["row"]
+        key = (fields.get("brand", "").lower(), fields.get("mfr_part_no", "").lower())
+        if not key[1]:
+            key = ("name", fields["name"].lower())
+        if taken:
+            item.update(action="skip", detail=f"Barcode {taken} already belongs to {lookup_code(conn, taken)['part_no']}.")
+        elif key in known:
+            same = "name" if key[0] == "name" else "brand and part number"
+            item.update(action="skip", detail=f"Looks like {known[key]} (same {same}).")
+        elif key in seen_in_sheet:
+            same = "name" if key[0] == "name" else "brand and part number"
+            item.update(action="skip", detail=f"Same {same} as row {seen_in_sheet[key]}.")
+        else:
+            seen_in_sheet[key] = row["row"]
+            item.update(action="add", data={"fields": fields, "qty": qty, "part_no": row.get("part_no", ""),
+                                            "vendor": vendor, "barcodes": row.get("barcodes", [])})
+    counts = {a: sum(1 for i in out if i["action"] == a) for a in ("add", "update", "same", "skip", "fix")}
+    return {"rows": out, "counts": counts, "new_vendors": sorted(new_vendors.values(), key=str.lower)}
+
+
+# Description: Imports spreadsheet rows: creates any new vendors, adds the "add" rows and
+#     applies the "update" rows from plan_import(). Rows marked skip, same or fix are left
+#     out. Everything happens together: if one part fails, nothing is saved.
+#     For example, the Import button on the Import screen calls this through POST /api/import.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+#     2: rows - [list of dict] Rows from excel.read_parts()["rows"].
+#     3: who - [str] Initials of the person importing (shown as "Added" by them in the log).
+# Returns: [dict] "added", "updated" and "vendors_added" counts, and "left_out" (rows not imported).
+# Raises: ServiceError if the initials are missing, or a row fails (with its row number).
+def run_import(conn, rows: list[dict[str, Any]], who: str) -> dict[str, Any]:
+    who = (who or "").strip().upper()
+    if not who:
+        raise ServiceError("Enter your initials.")
+    plan = plan_import(conn, rows)
+    added = updated = 0
+    with transaction(conn):
+        vendor_ids = {r["name"].lower(): r["id"] for r in conn.execute("SELECT id, name FROM vendors")}
+        for name in plan["new_vendors"]:
+            vendor_ids[name.lower()] = create_vendor(conn, {"name": name})["id"]
+        for item in plan["rows"]:
+            data = item.get("data")
+            if not data:
+                continue
+            fields = dict(data["fields"])
+            if data["vendor"]:
+                fields["vendor_id"] = vendor_ids[data["vendor"].lower()]
+            try:
+                if item["action"] == "add":
+                    create_part(conn, {**fields, "qty": data["qty"], "part_no": data["part_no"]}, who, data["barcodes"])
+                    added += 1
+                else:
+                    update_part(conn, data["id"], fields, who)
+                    updated += 1
+            except ServiceError as e:
+                raise ServiceError(f"Row {item['row']}: {e} Nothing was imported.") from None
+    return {"added": added, "updated": updated, "vendors_added": len(plan["new_vendors"]),
+            "left_out": plan["counts"]["skip"] + plan["counts"]["fix"]}
+
+
+# Description: Gathers every part (merged ones left out) for the Excel export, with the
+#     vendor's name, the stock color and the barcodes other than the STJ number.
+#     For example, the "Download Excel" button calls this through GET /api/export.xlsx.
+# Parameters:
+#     1: conn - [sqlite3.Connection] The open database (from db.connect).
+# Returns: [list of dict] Parts sorted by name, with "vendor", "status" and "barcodes" (list).
+def export_parts(conn) -> list[dict[str, Any]]:
+    codes: dict[int, list[str]] = {}
+    for r in conn.execute("SELECT part_id, code FROM barcodes WHERE kind <> 'internal' ORDER BY code"):
+        codes.setdefault(r["part_id"], []).append(r["code"])
+    parts = []
+    for r in conn.execute(
+        "SELECT p.*, COALESCE(v.name, '') AS vendor FROM parts p LEFT JOIN vendors v ON v.id = p.vendor_id"
+        " WHERE p.merged_into IS NULL ORDER BY p.name COLLATE NOCASE"
+    ):
+        p = dict(r)
+        p["status"] = stock_status(p["qty"], p["min_qty"])
+        p["barcodes"] = codes.get(p["id"], [])
+        parts.append(p)
+    return parts

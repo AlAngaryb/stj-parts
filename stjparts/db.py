@@ -199,11 +199,25 @@ def _split(sql: str) -> list[str]:
 #             ...change stock...
 #             ...write the activity line...
 #     For example, a check out never changes the count without also logging it.
+#     Groups can sit inside each other: an Excel import wraps many create_part() calls in one
+#     outer group, so a failure part way through undoes the whole import.
 # Parameters:
 #     1: conn - [sqlite3.Connection] The open database.
 # Returns: [sqlite3.Connection] The same connection, for use inside the block.
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    if conn.in_transaction:
+        # Already inside a group: use a savepoint so only this inner part can be undone.
+        conn.execute("SAVEPOINT inner_tx")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK TO inner_tx")
+            conn.execute("RELEASE inner_tx")
+            raise
+        else:
+            conn.execute("RELEASE inner_tx")
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn

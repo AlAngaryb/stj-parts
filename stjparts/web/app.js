@@ -468,7 +468,7 @@
     const facets = await api('/parts/facets');
     const state = { q: params.get('q') || '', room: '', brand: '', stock: '', sort: store.get('sort', 'name') };
     view.innerHTML = `
-      <div class="row between"><h1>Parts library</h1><a class="btn primary" href="#/new">+ Add part</a></div>
+      <div class="row between"><h1>Parts library</h1><div class="row"><a class="btn" href="#/import">Excel import / export</a><a class="btn primary" href="#/new">+ Add part</a></div></div>
       <form id="sf" onsubmit="return false">
         <label class="field" for="q" style="font-size:15px">Search parts</label>
         <input id="q" type="search" style="width:100%;font-size:18px;padding:14px 16px;margin-top:6px"
@@ -710,6 +710,102 @@
     }));
   };
 
+  /**
+   * Description: Screen: Excel import and export. Export downloads every part as a spreadsheet.
+   *   Import takes a .xlsx file (the app's own export, or the STJ Spare Parts Template/Starter),
+   *   shows what each row would do (add, update, skip, fix) and saves only when "Import" is
+   *   pressed. The file is sent twice (preview, then import) so nothing is kept half-done.
+   *   Address: #/import
+   * Parameters: None.
+   * Returns: [Promise] Resolves when drawn.
+   */
+  screens.importExport = async () => {
+    const words = { add: 'Add', update: 'Update', same: 'No change', skip: 'Skip', fix: 'Fix' };
+    view.innerHTML = `
+      <div class="row between"><h1>Excel import and export</h1><a class="btn" href="#/library">Back to library</a></div>
+      <div class="card row between">
+        <div><h2>Export</h2><div class="muted">Every part in one spreadsheet. Edit it and import it back to update details.</div></div>
+        <a class="btn primary" href="/api/export.xlsx" download>Download Excel</a>
+      </div>
+      <div class="card" style="display:flex;flex-direction:column;gap:14px">
+        <div><h2>Import</h2><div class="muted">Use the app's export or the STJ Spare Parts Template. Nothing is saved until you press Import.
+          Parts already in the app are matched by STJ part no., then by brand and part number, then by name. Import never changes on-hand counts of existing parts.</div></div>
+        <div class="row" style="align-items:flex-end">
+          <label class="field">Spreadsheet (.xlsx)<input type="file" id="file" accept=".xlsx"></label>
+          <label class="field">Your initials<input id="who" class="mono" maxlength="4" style="text-transform:uppercase;width:110px" value="${esc(store.get('who'))}"></label>
+          <button class="btn" id="check" disabled>Check file</button>
+        </div>
+        <p class="notice error" id="err" hidden></p>
+      </div>
+      <div id="preview"></div>`;
+    const fileIn = $('#file');
+    const showErr = (msg) => { $('#err').textContent = msg; $('#err').hidden = !msg; };
+    /**
+     * Description: Sends the chosen file to the server, either for the preview or to import it.
+     *   Uses a form upload instead of api(), which only sends JSON.
+     * Parameters:
+     *   1: path - [string] '/import/preview' or '/import'.
+     * Returns: [Promise<object>] The server's answer. Throws an Error with its message on a problem.
+     */
+    async function send(path) {
+      const form = new FormData();
+      form.append('file', fileIn.files[0]);
+      form.append('who', $('#who').value.trim().toUpperCase());
+      const r = await fetch('/api' + path, { method: 'POST', body: form });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ('Error ' + r.status));
+      return data;
+    }
+    /**
+     * Description: Draws the preview: counts per action, new vendors, and a table of every row
+     *   (problems first), plus the Import button.
+     * Parameters:
+     *   1: plan - [object] The answer from /import/preview.
+     * Returns: Nothing.
+     */
+    function drawPreview(plan) {
+      const c = plan.counts;
+      const todo = c.add + c.update;
+      const order = { fix: 0, skip: 1, update: 2, add: 3, same: 4 };
+      const rows = plan.rows.slice().sort((a, b) => order[a.action] - order[b.action] || a.row - b.row);
+      const cls = { fix: 'out', skip: 'low', update: 'ok', add: 'ok', same: '' };
+      $('#preview').innerHTML = `
+        <div class="card" style="display:flex;flex-direction:column;gap:12px">
+          <div class="row between"><h2>Tab "${esc(plan.sheet)}": ${plan.rows.length} rows</h2>
+            <button class="btn primary" id="go" ${todo ? '' : 'disabled'}>Import ${todo} part${todo === 1 ? '' : 's'}</button></div>
+          <div class="row" style="gap:20px">
+            ${Object.keys(words).map((k) => `<span><b class="qty">${c[k]}</b> ${words[k].toLowerCase()}</span>`).join('')}
+          </div>
+          ${plan.new_vendors.length ? `<div class="muted">New vendors to add: ${plan.new_vendors.map(esc).join(', ')}</div>` : ''}
+          ${plan.ignored.length ? `<div class="muted">Columns not used: ${plan.ignored.map(esc).join(', ')}</div>` : ''}
+          ${c.fix + c.skip ? '<div class="muted">Rows marked Fix or Skip are left out. Fix them in the spreadsheet and check the file again, or import without them.</div>' : ''}
+        </div>
+        <div class="tablewrap"><table><thead><tr><th class="stripe"></th><th>Row</th><th>Action</th><th>Part</th><th>STJ no.</th><th>Details</th></tr></thead><tbody>
+          ${rows.map((i) => `<tr class="${cls[i.action]}"><td class="stripe"></td><td>${i.row}</td><td><b>${words[i.action]}</b></td>
+            <td>${esc(i.name)}</td><td class="mono">${esc(i.part_no || (i.action === 'add' ? 'new' : ''))}</td><td class="muted">${esc(i.detail)}</td></tr>`).join('')}
+        </tbody></table></div>`;
+      if (!todo) return;
+      $('#go').addEventListener('click', async () => {
+        showErr('');
+        if (!$('#who').value.trim()) { showErr('Enter your initials first.'); $('#who').focus(); return; }
+        store.set('who', $('#who').value.trim().toUpperCase());
+        $('#go').disabled = true; $('#go').textContent = 'Importing…';
+        try {
+          const r = await send('/import');
+          $('#preview').innerHTML = `<div class="card row between"><div><h2>Imported</h2><div>${r.added} added, ${r.updated} updated${r.vendors_added ? `, ${r.vendors_added} new vendor${r.vendors_added === 1 ? '' : 's'}` : ''}${r.left_out ? `. ${r.left_out} row${r.left_out === 1 ? '' : 's'} left out` : ''}.</div></div>
+            <a class="btn primary" href="#/library">Open parts library</a></div>`;
+          toast(`Imported ${r.added + r.updated} parts.`);
+        } catch (e) { showErr(e.message); $('#go').disabled = false; $('#go').textContent = `Import ${todo} parts`; }
+      });
+    }
+    fileIn.addEventListener('change', () => { $('#check').disabled = !fileIn.files.length; $('#preview').innerHTML = ''; showErr(''); });
+    $('#check').addEventListener('click', async () => {
+      showErr(''); $('#check').disabled = true; $('#check').textContent = 'Checking…';
+      try { drawPreview(await send('/import/preview')); } catch (e) { showErr(e.message); }
+      finally { $('#check').disabled = false; $('#check').textContent = 'Check file'; }
+    });
+  };
+
   // ------------------------------------------------------------ router
   /**
    * Description: The screen switcher. Reads the address after the # sign and draws the matching
@@ -737,6 +833,7 @@
       else if (parts[0] === 'library') { nav = 'library'; await screens.library(params); }
       else if (parts[0] === 'log') { nav = 'log'; await screens.log(params); }
       else if (parts[0] === 'vendors') { nav = 'vendors'; await screens.vendors(); }
+      else if (parts[0] === 'import') { nav = 'library'; await screens.importExport(); }
       else { view.innerHTML = '<div class="card">Page not found. <a href="#/">Go home</a></div>'; }
     } catch (e) {
       view.innerHTML = `<div class="card notice error">${esc(e.message)}</div><a class="btn" href="#/">Go home</a>`;

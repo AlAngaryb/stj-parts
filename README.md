@@ -18,6 +18,10 @@ label printer. No server or internet needed.
 - Label printing to the Brady BMP71 through its normal Windows driver: live preview, four label sizes
   (editable), optional name and location, copies, and a PDF download. If the printer is off or out of
   tape, jobs wait in a queue on the home screen until you press Print now.
+- Excel import and export (Parts library > Excel import / export). Import reads the app's own export
+  or the STJ Spare Parts Template/Starter sheet, shows what each row will do (add, update, skip, fix)
+  and saves only when you press Import. Existing parts are matched by STJ part no., then brand and
+  part number, then name, so importing the same sheet twice doesn't make duplicates.
 
 Next up: photos and documents, locations, Excel import/export, supervisor login,
 daily report. The full design is in `docs/spec.md`.
@@ -54,6 +58,7 @@ Real data lives in `%LOCALAPPDATA%\STJParts` (database `parts.db`). Set `STJ_PAR
 | Path | What it is |
 |---|---|
 | `stjparts/db.py` | SQLite file and numbered migrations (never edit a shipped migration; add one) |
+| `stjparts/excel.py` | Reading and writing parts spreadsheets (.xlsx) |
 | `stjparts/services.py` | All the rules: parts, stock moves, search, merge, vendors, people |
 | `stjparts/api.py` | HTTP API the screens use (`/api/...`); a phone app could use the same one later |
 | `stjparts/web/` | The screens: plain HTML, CSS and JavaScript, no build step |

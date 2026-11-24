@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, barcodes, db, labels, services
+from . import __version__, barcodes, db, excel, labels, services
 from .services import NotFound, ServiceError
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -286,6 +287,55 @@ def create_app(db_file: Path | str | None = None) -> FastAPI:
     @app.post("/api/parts/merge")
     def merge(body: MergeIn, c=Depends(get_conn)):
         return services.merge_parts(c, body.keep_id, body.remove_id, body.who)
+
+    # Description: Reads an uploaded spreadsheet into rows. Shared by the two import endpoints.
+    # Parameters:
+    #     1: file - [UploadFile] The .xlsx file the Import screen sent.
+    # Returns: [dict] What excel.read_parts() returns (sheet, rows, ignored).
+    # Raises: ServiceError with a plain message if the file can't be read.
+    def _read_upload(file: UploadFile) -> dict[str, Any]:
+        try:
+            return excel.read_parts(file.file.read())
+        except ValueError as e:
+            raise ServiceError(str(e)) from None
+
+    # Description: POST /api/import/preview. Shows what importing a spreadsheet would do,
+    #     row by row, without saving anything.
+    # Parameters:
+    #     1: file - [UploadFile] The .xlsx file (form field "file").
+    #     2: c - [sqlite3.Connection] The database, supplied automatically by get_conn.
+    # Returns: [dict] services.plan_import() plus "sheet" and "ignored" (unused headings).
+    @app.post("/api/import/preview")
+    def import_preview(file: UploadFile = File(...), c=Depends(get_conn)):
+        sheet = _read_upload(file)
+        plan = services.plan_import(c, sheet["rows"])
+        for item in plan["rows"]:
+            item.pop("data", None)
+        return {**plan, "sheet": sheet["sheet"], "ignored": sheet["ignored"]}
+
+    # Description: POST /api/import. Imports the spreadsheet (the same file as the preview).
+    # Parameters:
+    #     1: file - [UploadFile] The .xlsx file (form field "file").
+    #     2: who - [str] Initials of the person importing (form field "who").
+    #     3: c - [sqlite3.Connection] The database, supplied automatically by get_conn.
+    # Returns: [dict] Counts from services.run_import().
+    @app.post("/api/import")
+    def import_parts(file: UploadFile = File(...), who: str = Form(""), c=Depends(get_conn)):
+        return services.run_import(c, _read_upload(file)["rows"], who)
+
+    # Description: GET /api/export.xlsx. Every part as an Excel download, named with today's
+    #     date, e.g. "STJ Parts 2026-11-24.xlsx".
+    # Parameters:
+    #     1: c - [sqlite3.Connection] The database, supplied automatically by get_conn.
+    # Returns: [Response] The .xlsx file.
+    @app.get("/api/export.xlsx")
+    def export_xlsx(c=Depends(get_conn)):
+        name = f"STJ Parts {date.today().isoformat()}.xlsx"
+        return Response(
+            excel.write_parts(services.export_parts(c)),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
 
     # Description: GET /api/barcode/CODE.svg. A barcode picture for the screen.
     # Parameters:

@@ -40,6 +40,8 @@ def test_patch_rejects_unknown_fields(client):
 def test_index_page_served(client):
     r = client.get("/")
     assert r.status_code == 200 and "STJ Parts" in r.text
+    assert r.headers["cache-control"] == "no-cache"
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
 
 
 def test_parallel_requests_dont_fail(client):
@@ -51,3 +53,28 @@ def test_parallel_requests_dont_fail(client):
     with ThreadPoolExecutor(8) as ex:
         codes = list(ex.map(lambda u: client.get(u).status_code, urls))
     assert set(codes) == {200}
+
+
+def test_second_start_refuses_a_different_running_copy(monkeypatch):
+    # A copy from another folder is on the port: main() must warn and stop, not open its window.
+    from stjparts import main as m
+
+    opened, warned = [], []
+    monkeypatch.setattr(m, "_port_in_use", lambda port: True)
+    monkeypatch.setattr(m, "open_window", lambda url: opened.append(url))
+    monkeypatch.setattr(m, "_warn", lambda msg: warned.append(msg))
+    monkeypatch.setattr(m, "_running_copy", lambda url: {"version": "0.1.0", "code_dir": r"C:\old\stjparts"})
+    import pytest
+    with pytest.raises(SystemExit):
+        m.main([])
+    assert not opened and "0.1.0" in warned[0] and r"C:\old" in warned[0]
+
+    # The same copy is running: just open another window.
+    monkeypatch.setattr(m, "_running_copy", lambda url: {"version": m.__version__, "code_dir": m.CODE_DIR})
+    m.main([])
+    assert len(opened) == 1
+
+
+def test_version_reports_code_folder(client):
+    info = client.get("/api/version").json()
+    assert info["version"] and info["code_dir"].endswith("stjparts")

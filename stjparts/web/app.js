@@ -4,10 +4,35 @@
   const view = document.getElementById('view');
 
   // ------------------------------------------------------------ helpers
+  /**
+   * Description: Makes text safe to put inside HTML, so a part name like "<1/2 in>" shows as
+   *   typed instead of being read as page code.
+   * Parameters:
+   *   1: v - [any] The text (null/undefined become "").
+   * Returns: [string] The escaped text.
+   */
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  /**
+   * Description: Shortcuts for finding elements on the current screen.
+   *   $('#qty') finds the first match; $$('.chip') finds all matches as an array.
+   * Parameters:
+   *   1: sel - [string] A CSS selector, e.g. '#qty' or '[data-who]'.
+   *   2: root - [Element] Where to look (defaults to the screen area).
+   * Returns: [Element|null] for $, [Array<Element>] for $$.
+   */
   const $ = (sel, root = view) => root.querySelector(sel);
   const $$ = (sel, root = view) => Array.from(root.querySelectorAll(sel));
 
+  /**
+   * Description: Calls the app's server (an /api address) and returns the answer. Sends a body
+   *   as JSON when one is given (and switches to POST). If the server reports a problem, it
+   *   throws an Error carrying the server's plain message so the screen can show it.
+   *   For example: await api('/parts/5/checkout', { body: { qty: 1, who: 'AB' } })
+   * Parameters:
+   *   1: path - [string] The address after /api, e.g. '/summary'.
+   *   2: opts - [object] Optional fetch settings: body (object to send), method ('POST', ...).
+   * Returns: [Promise<object>] The server's JSON answer.
+   */
   async function api(path, opts = {}) {
     const init = { headers: {}, ...opts };
     if (opts.body !== undefined) { init.method = init.method || 'POST'; init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
@@ -18,17 +43,37 @@
   }
 
   let toastTimer;
+  /**
+   * Description: Shows a short message at the bottom of the screen that fades by itself.
+   *   For example: "Checked out 2. 2 left." after a check out.
+   * Parameters:
+   *   1: msg - [string] The message.
+   *   2: isError - [boolean] true shows it in red and leaves it up longer.
+   * Returns: Nothing.
+   */
   function toast(msg, isError) {
     const t = document.getElementById('toast');
     t.textContent = msg; t.className = 'show' + (isError ? ' error' : '');
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ''; }, isError ? 5000 : 2500);
   }
 
+  /**
+   * Description: Remembers small conveniences in this browser (last initials used, chosen sort).
+   *   Wrapped in try/catch because some browser modes block storage; the app still works.
+   *   store.get(key, default) -> [string]   store.set(key, value) -> nothing
+   */
   const store = {
     get(k, d = '') { try { return localStorage.getItem('stj.' + k) ?? d; } catch { return d; } },
     set(k, v) { try { localStorage.setItem('stj.' + k, v); } catch { /* private mode */ } },
   };
 
+  /**
+   * Description: Turns a database time into a short readable one: just the time for today
+   *   ("10:05 AM"), or date and time for earlier days ("Nov 18, 2:10 PM").
+   * Parameters:
+   *   1: at - [string] Time as stored, e.g. "2026-11-23 10:05:00".
+   * Returns: [string] The readable time.
+   */
   function fmtTime(at) {
     if (!at) return '';
     const d = new Date(at.replace(' ', 'T'));
@@ -38,11 +83,26 @@
     return today ? time : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
   }
 
+  /**
+   * Description: Words for the Action column of an activity line, e.g. "Out 2", "In 1",
+   *   "Added (4)" or "Count set to 3".
+   * Parameters:
+   *   1: a - [object] One activity line from the server.
+   * Returns: [string] The words to show.
+   */
   function actionText(a) {
     const n = Math.abs(a.qty_change);
     return { out: 'Out ' + n, in: 'In ' + n, added: 'Added (' + a.qty_after + ')', adjust: 'Count set to ' + a.qty_after, merge: 'Merged' }[a.action] || a.action;
   }
 
+  /**
+   * Description: Builds the colored activity table used on the home screen, part page and
+   *   Activity log. Each row's left stripe is red (none left), amber (at/below min) or green.
+   * Parameters:
+   *   1: rows - [Array<object>] Activity lines from the server.
+   *   2: opts - [object] Optional: { vendor: true } adds the Vendor column.
+   * Returns: [string] HTML for the table, or a "Nothing yet" card if there are no rows.
+   */
   function activityTable(rows, opts = {}) {
     if (!rows.length) return '<div class="card muted">Nothing yet. Scan a label or add a part to get started.</div>';
     return `<div class="tablewrap"><table>
@@ -55,13 +115,34 @@
       </tbody></table></div>`;
   }
 
+  /**
+   * Description: Makes every table row that names a part (data-part="ID") open that part's page
+   *   when clicked. Called after a screen with a table is drawn.
+   * Parameters: None.
+   * Returns: Nothing.
+   */
   function wireRows() {
     $$('tr[data-part]').forEach((tr) => tr.addEventListener('click', () => go('#/part/' + tr.dataset.part)));
   }
 
+  /**
+   * Description: Switches to another screen by changing the address after the # sign. If it is
+   *   already that address, the screen is redrawn instead (e.g. to refresh after saving).
+   * Parameters:
+   *   1: hash - [string] The screen address, e.g. '#/part/5'.
+   * Returns: Nothing.
+   */
   function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
 
   // ------------------------------------------------------------ scanning
+  /**
+   * Description: What happens after any scan: asks the server whether the code belongs to a part,
+   *   then opens that part's page, or the "Unregistered barcode" screen if it's new.
+   *   The "Scanner ready" pill turns yellow while it looks.
+   * Parameters:
+   *   1: code - [string] The scanned or typed code.
+   * Returns: [Promise] Resolves when the next screen has been chosen.
+   */
   async function handleScan(code) {
     const pill = document.getElementById('scanPill');
     pill.classList.add('busy');
@@ -71,6 +152,11 @@
     } catch (e) { toast(e.message, true); }
     finally { pill.classList.remove('busy'); }
   }
+  /*
+   * Every scan lands here. A screen can claim scans for itself by setting
+   * currentScanHandler (the Add part form uses this to fill its Barcode box);
+   * otherwise the scan opens the part or the Unregistered screen.
+   */
   window.Scanner.onScan((code) => {
     // A screen can claim scans for itself (e.g. the new-part form fills its barcode box).
     if (typeof currentScanHandler === 'function' && currentScanHandler(code) === true) return;
@@ -79,8 +165,20 @@
   let currentScanHandler = null;
 
   // ------------------------------------------------------------ screens
+  /*
+   * Each screen is a function on this object. route() picks one based on the address,
+   * the function asks the server for its data, then fills in the page (view.innerHTML)
+   * and attaches the button actions.
+   */
   const screens = {};
 
+  /**
+   * Description: Screen: Home. Scan prompt, "type a code" box, the four quick tiles with counts,
+   *   the most recent activity, and a notice when label jobs are waiting to print.
+   *   Address: #/
+   * Parameters: None.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.home = async () => {
     const [sum, acts, printer] = await Promise.all([api('/summary'), api('/activity?limit=12'), api('/printer')]);
     view.innerHTML = `
@@ -111,6 +209,14 @@
     wireRows();
   };
 
+  /**
+   * Description: Screen: Unregistered barcode. Shown when a scanned code isn't on any part; offers
+   *   "Create new part with this barcode" or "Rescan".
+   *   Address: #/unknown/CODE
+   * Parameters:
+   *   1: code - [string] The code that was scanned.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.unknown = async (code) => {
     view.innerHTML = `
       <div class="card" style="border-left:6px solid var(--amber-bar)">
@@ -125,6 +231,14 @@
       <p class="muted">Is this a second barcode for a part you already have? Open that part and use "Add barcode".</p>`;
   };
 
+  /**
+   * Description: Screen: Part page. Name, on-hand count, Check out / Check in / Print label buttons,
+   *   details, barcodes (with "Add barcode"), the on-screen barcode and recent activity.
+   *   Address: #/part/ID
+   * Parameters:
+   *   1: id - [string] The part's database ID from the address.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.part = async (id) => {
     const p = await api('/parts/' + id);
     const v = p.vendor;
@@ -170,8 +284,22 @@
     $('#addCode').addEventListener('click', () => addBarcodeFlow(p));
   };
 
+  /**
+   * Description: Stock color for a quantity, the same rule the server uses.
+   * Parameters:
+   *   1: qty - [number] Quantity on hand.
+   *   2: min - [number|null] Reorder point, or null for none.
+   * Returns: [string] 'out', 'low' or 'ok'.
+   */
   function statusOf(qty, min) { return qty <= 0 ? 'out' : (min != null && qty <= min ? 'low' : 'ok'); }
 
+  /**
+   * Description: The "Add barcode" button on the part page: asks the person to scan, then
+   *   attaches the next scanned code to this part instead of opening it.
+   * Parameters:
+   *   1: p - [object] The part currently shown.
+   * Returns: Nothing.
+   */
   function addBarcodeFlow(p) {
     toast('Scan the extra barcode now.');
     currentScanHandler = (code) => {
@@ -183,6 +311,16 @@
     };
   }
 
+  /**
+   * Description: Screen: Check out or Check in. Pick who (buttons, or type initials, remembered for
+   *   next time), set the quantity, enter the WO/PO, see a warning if stock will hit the
+   *   minimum, then confirm.
+   *   Address: #/part/ID/out or #/part/ID/in
+   * Parameters:
+   *   1: id - [string] The part's database ID.
+   *   2: dir - [string] 'out' or 'in'.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.move = async (id, dir) => {
     const [p, people] = await Promise.all([api('/parts/' + id), api('/people')]);
     const isOut = dir === 'out';
@@ -244,6 +382,15 @@
     paint();
   };
 
+  /**
+   * Description: Screen: Add part. The rapid-entry form. A scan while it's open fills the Barcode
+   *   box instead of opening a part. "Save and print label" goes to the print screen;
+   *   "Save and add another" clears the form for the next part.
+   *   Address: #/new  (or #/new?code=CODE coming from the Unregistered screen)
+   * Parameters:
+   *   1: params - [URLSearchParams] Values after the ?, e.g. code.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.newPart = async (params) => {
     const [vendors, facets] = await Promise.all([api('/vendors'), api('/parts/facets')]);
     const code = params.get('code') || '';
@@ -309,6 +456,14 @@
     });
   };
 
+  /**
+   * Description: Screen: Parts library. Search box (scan-friendly), room/brand filters, stock chips
+   *   and sort. Results update as you type; the chosen sort is remembered.
+   *   Address: #/library  (or #/library?q=TEXT)
+   * Parameters:
+   *   1: params - [URLSearchParams] Values after the ?, e.g. q.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.library = async (params) => {
     const facets = await api('/parts/facets');
     const state = { q: params.get('q') || '', room: '', brand: '', stock: '', sort: store.get('sort', 'name') };
@@ -367,6 +522,13 @@
     load();
   };
 
+  /**
+   * Description: Screen: Activity log, colored by what's left, with All / Today / To order only.
+   *   Address: #/log, #/log?day=today or #/log?to_order=1
+   * Parameters:
+   *   1: params - [URLSearchParams] Values after the ?.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.log = async (params) => {
     const toOrder = params.get('to_order') === '1';
     const today = params.get('day') === 'today';
@@ -387,6 +549,12 @@
     wireRows();
   };
 
+  /**
+   * Description: Screen: Vendors. Add-vendor form and the vendor list with part counts.
+   *   Address: #/vendors
+   * Parameters: None.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.vendors = async () => {
     const list = await api('/vendors');
     view.innerHTML = `
@@ -416,6 +584,12 @@
     });
   };
 
+  /**
+   * Description: The "Print now" button: asks the server to print every waiting label job, then
+   *   shows how many printed (or why it stopped) and redraws the screen.
+   * Parameters: None.
+   * Returns: [Promise] Resolves when done.
+   */
   async function retryQueue() {
     try {
       const r = await api('/print-jobs/retry', { method: 'POST' });
@@ -425,6 +599,16 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  /**
+   * Description: Screen: Print label. Live preview at true proportions, label size buttons, name and
+   *   location toggles, copies, Print, and "Download PDF instead". If the printer isn't
+   *   available, the job is saved to print later.
+   *   Address: #/part/ID/print  (?new=1 after saving a new part adds a Skip button)
+   * Parameters:
+   *   1: id - [string] The part's database ID.
+   *   2: params - [URLSearchParams] Values after the ?.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.print = async (id, params) => {
     const [p, presets, printer] = await Promise.all([api('/parts/' + id), api('/labels/presets'), api('/printer')]);
     const st = { preset: presets[0], copies: 1, name: !!presets[0].show_name, loc: !!presets[0].show_location };
@@ -504,6 +688,13 @@
     paint();
   };
 
+  /**
+   * Description: Screen: Waiting to print. Lists label jobs that couldn't print yet, with the
+   *   reason, a Cancel button for each, and "Print all now".
+   *   Address: #/print-queue
+   * Parameters: None.
+   * Returns: [Promise] Resolves when drawn.
+   */
   screens.printQueue = async () => {
     const jobs = await api('/print-jobs');
     view.innerHTML = `
@@ -520,6 +711,14 @@
   };
 
   // ------------------------------------------------------------ router
+  /**
+   * Description: The screen switcher. Reads the address after the # sign and draws the matching
+   *   screen, e.g. '#/part/5/out' draws the check-out screen for part 5. Also highlights the
+   *   right top-bar link and shows a friendly message if a screen fails to load.
+   *   Runs on startup and every time the address changes.
+   * Parameters: None.
+   * Returns: [Promise] Resolves when the screen is drawn.
+   */
   async function route() {
     currentScanHandler = null;
     const [path, query] = (location.hash.slice(1) || '/').split('?');

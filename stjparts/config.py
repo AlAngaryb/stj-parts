@@ -35,4 +35,6 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "description_required": "0",
     "supervisor_logout_minutes": "10",
     "low_stock_default_min": "1",
+    "label_printer": "",  # blank = pick the Brady automatically
+    "label_dpi": "300",  # BMP71 prints at 300 dpi
 }

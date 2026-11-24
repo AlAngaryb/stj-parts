@@ -82,8 +82,10 @@
   const screens = {};
 
   screens.home = async () => {
-    const [sum, acts] = await Promise.all([api('/summary'), api('/activity?limit=12')]);
+    const [sum, acts, printer] = await Promise.all([api('/summary'), api('/activity?limit=12'), api('/printer')]);
     view.innerHTML = `
+      ${printer.waiting ? `<div class="notice row between"><span><b>${printer.waiting} label job${printer.waiting === 1 ? '' : 's'} waiting to print.</b> The printer was off or not found.</span>
+        <span class="row"><a class="btn" href="#/print-queue">See list</a><button class="btn primary" id="retryPrint">Print now</button></span></div>` : ''}
       <div class="scan-card">
         <div class="grow">
           <div class="title">Scan any label</div>
@@ -103,6 +105,8 @@
       </div>
       <div class="row between"><h2>Recent activity</h2><a class="btn" href="#/log">See full activity log</a></div>
       ${activityTable(acts)}`;
+    const rp = $('#retryPrint');
+    if (rp) rp.addEventListener('click', retryQueue);
     $('#typeCode').addEventListener('submit', (e) => { e.preventDefault(); const v = $('#codeBox').value.trim(); if (v) handleScan(v); });
     wireRows();
   };
@@ -141,7 +145,7 @@
       <section style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px">
         <a class="btn big primary" href="#/part/${p.id}/out" ${p.qty <= 0 ? 'aria-disabled="true"' : ''}>Check out part</a>
         <a class="btn big green" href="#/part/${p.id}/in">Check in part</a>
-        <button class="btn big" id="printBtn" title="Printing arrives with the label printer screen">Print new label</button>
+        <a class="btn big" href="#/part/${p.id}/print">Print new label</a>
       </section>
       <section class="row" style="align-items:flex-start;gap:20px">
         <div class="card" style="flex:2 1 520px;min-width:0">
@@ -163,7 +167,6 @@
       </section>
       <div class="caption">Recent activity</div>
       ${activityTable(p.activity.map((a) => ({ ...a, name: p.name, status: statusOf(a.qty_after, p.min_qty) })))}`;
-    $('#printBtn').addEventListener('click', () => toast('Label printing is the next piece being built.'));
     $('#addCode').addEventListener('click', () => addBarcodeFlow(p));
   };
 
@@ -267,7 +270,7 @@
         </div>
         <p class="notice error" id="err" hidden></p>
         <div class="row" style="margin-top:16px">
-          <button class="btn big primary grow" name="go" value="open">Save part</button>
+          <button class="btn big primary grow" name="go" value="open">Save and print label</button>
           <button class="btn big grow" name="go" value="again">Save and add another</button>
         </div>
       </form>
@@ -301,7 +304,7 @@
         const p = await api('/parts', { body });
         store.set('who', body.who);
         toast(`Saved as ${p.part_no}.`);
-        if (e.submitter && e.submitter.value === 'again') { go('#/new?r=' + Date.now()); } else { go('#/part/' + p.id); }
+        if (e.submitter && e.submitter.value === 'again') { go('#/new?r=' + Date.now()); } else { go('#/part/' + p.id + '/print?new=1'); }
       } catch (err) { const el = $('#err'); el.hidden = false; el.textContent = err.message; }
     });
   };
@@ -413,6 +416,109 @@
     });
   };
 
+  async function retryQueue() {
+    try {
+      const r = await api('/print-jobs/retry', { method: 'POST' });
+      if (r.error) toast(`Printed ${r.printed}. ${r.waiting} still waiting: ${r.error}`, true);
+      else toast(`Printed ${r.printed} label job${r.printed === 1 ? '' : 's'}.`);
+      route();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  screens.print = async (id, params) => {
+    const [p, presets, printer] = await Promise.all([api('/parts/' + id), api('/labels/presets'), api('/printer')]);
+    const st = { preset: presets[0], copies: 1, name: !!presets[0].show_name, loc: !!presets[0].show_location };
+    const printerLine = printer.selected
+      ? `<span class="pill" style="background:#E3F3E8;color:var(--green)"><span class="dot"></span>${esc(printer.selected)} ready</span>`
+      : `<span class="pill" style="background:var(--amber-bg);color:var(--amber)"><span class="dot"></span>${printer.can_print ? 'No Brady printer found' : 'Printing works on the shop PC only'}</span>`;
+    view.innerHTML = `
+      <div class="row between">
+        <div><a href="#/part/${p.id}" style="font-weight:600;text-decoration:none">‹ Back to part</a>
+          <h1>${params.get('new') ? 'Saved. Print a label?' : 'Print label'}</h1><div class="muted">${esc(p.name)} · <span class="mono">${esc(p.part_no)}</span></div></div>
+        ${printerLine}
+      </div>
+      <div class="row" style="align-items:flex-start;gap:16px">
+        <section class="card" style="flex:1.3 1 520px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div class="caption">Preview, true proportions</div>
+          <div style="background:repeating-conic-gradient(#EEF1F3 0% 25%,#F7F9FA 0% 50%) 0 0/20px 20px;border-radius:8px;padding:28px 16px;display:flex;justify-content:center;align-items:center;min-height:260px">
+            <img id="prev" alt="Label preview" style="background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.25);border-radius:4px">
+          </div>
+          <p class="notice error" id="err" hidden></p>
+          <span class="muted" style="font-size:14px">Code 128 barcode, which your scanner reads. The barcode and part number always print.</span>
+        </section>
+        <section style="flex:1 1 360px;min-width:0;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:8px"><h2>Label size</h2>
+            ${presets.map((x) => `<button class="btn" data-preset="${x.id}" style="justify-content:space-between;min-height:58px;text-align:left">
+              <span><b>${esc(x.name)}</b><br><span class="muted" style="font-weight:400;font-size:13px">${esc(x.description)}</span></span>
+              <span class="mono muted">${x.width_in} × ${x.height_in} in</span></button>`).join('')}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px"><h2>Also show</h2>
+            <button class="btn" id="tName" style="justify-content:flex-start"></button>
+            <button class="btn" id="tLoc" style="justify-content:flex-start"></button>
+          </div>
+          <div class="row"><h2>Copies</h2>
+            <div class="stepper"><button class="btn" id="dec" aria-label="One less">−</button><output id="copies">1</output><button class="btn" id="inc" aria-label="One more">+</button></div>
+            ${p.qty > 1 ? `<button class="btn" id="perItem">One per item (${p.qty})</button>` : ''}
+          </div>
+          <button class="btn big primary" id="go"></button>
+          <div class="row"><a class="btn" id="pdf">Download PDF instead</a>${params.get('new') ? `<a class="btn" href="#/part/${p.id}">Skip</a>` : ''}</div>
+          <span class="muted" style="font-size:14px">Printer off or out of tape? The label waits on the home screen and prints when you press Print now.</span>
+        </section>
+      </div>`;
+    const paint = () => {
+      $$('[data-preset]').forEach((b) => b.classList.toggle('on', Number(b.dataset.preset) === st.preset.id));
+      $('#tName').textContent = (st.name ? '☑' : '☐') + ' Part name';
+      $('#tLoc').textContent = (st.loc ? '☑' : '☐') + ' Location';
+      $('#tName').classList.toggle('on', st.name); $('#tLoc').classList.toggle('on', st.loc);
+      $('#copies').textContent = st.copies;
+      $('#go').textContent = st.copies === 1 ? 'Print 1 label' : `Print ${st.copies} labels`;
+      const q = `preset=${st.preset.id}&name=${st.name}&loc=${st.loc}`;
+      $('#pdf').href = `/api/parts/${p.id}/label.pdf?${q}&copies=${st.copies}`;
+      const img = $('#prev');
+      const scale = 150; // screen pixels per inch for the preview
+      img.style.width = (st.preset.width_in * scale) + 'px';
+      img.style.height = (st.preset.height_in * scale) + 'px';
+      fetch(`/api/parts/${p.id}/label.png?${q}`).then(async (r) => {
+        const err = $('#err');
+        if (!r.ok) { err.hidden = false; err.textContent = (await r.json()).error; img.hidden = true; $('#go').disabled = true; return; }
+        err.hidden = true; img.hidden = false; $('#go').disabled = false;
+        img.src = URL.createObjectURL(await r.blob());
+      });
+    };
+    $$('[data-preset]').forEach((b) => b.addEventListener('click', () => {
+      st.preset = presets.find((x) => x.id === Number(b.dataset.preset)); st.name = !!st.preset.show_name; st.loc = !!st.preset.show_location; paint();
+    }));
+    $('#tName').addEventListener('click', () => { st.name = !st.name; paint(); });
+    $('#tLoc').addEventListener('click', () => { st.loc = !st.loc; paint(); });
+    $('#inc').addEventListener('click', () => { st.copies = Math.min(200, st.copies + 1); paint(); });
+    $('#dec').addEventListener('click', () => { st.copies = Math.max(1, st.copies - 1); paint(); });
+    if ($('#perItem')) $('#perItem').addEventListener('click', () => { st.copies = Math.min(200, p.qty); paint(); });
+    $('#go').addEventListener('click', async () => {
+      try {
+        const r = await api(`/parts/${p.id}/print`, { body: { preset_id: st.preset.id, copies: st.copies, show_name: st.name, show_location: st.loc, who: store.get('who') } });
+        if (r.printed) { toast(`Printed ${st.copies} label${st.copies === 1 ? '' : 's'}.`); }
+        else { toast(`Saved to print later: ${r.error}`, true); }
+        go('#/part/' + p.id);
+      } catch (e) { toast(e.message, true); }
+    });
+    paint();
+  };
+
+  screens.printQueue = async () => {
+    const jobs = await api('/print-jobs');
+    view.innerHTML = `
+      <div class="row between"><h1>Waiting to print</h1>${jobs.length ? '<button class="btn primary" id="retry">Print all now</button>' : ''}</div>
+      ${jobs.length ? `<div class="tablewrap"><table><thead><tr><th>Added</th><th>Part</th><th>Label</th><th>Copies</th><th>Problem</th><th></th></tr></thead><tbody>
+        ${jobs.map((j) => `<tr><td>${esc(fmtTime(j.created_at))}</td><td><b>${esc(j.name)}</b> <span class="mono muted">${esc(j.part_no)}</span></td>
+          <td>${esc(j.preset)}</td><td>${j.copies}</td><td class="muted">${esc(j.error)}</td>
+          <td><button class="btn" data-cancel="${j.id}">Cancel</button></td></tr>`).join('')}</tbody></table></div>`
+        : '<div class="card muted">Nothing waiting. All labels have printed.</div>'}`;
+    if ($('#retry')) $('#retry').addEventListener('click', retryQueue);
+    $$('[data-cancel]').forEach((b) => b.addEventListener('click', async () => {
+      await api('/print-jobs/' + b.dataset.cancel + '/cancel', { method: 'POST' }); route();
+    }));
+  };
+
   // ------------------------------------------------------------ router
   async function route() {
     currentScanHandler = null;
@@ -423,6 +529,8 @@
     try {
       if (!parts.length) await screens.home();
       else if (parts[0] === 'part' && parts[2] === 'out') { nav = 'library'; await screens.move(parts[1], 'out'); }
+      else if (parts[0] === 'part' && parts[2] === 'print') { nav = 'library'; await screens.print(parts[1], params); }
+      else if (parts[0] === 'print-queue') { nav = ''; await screens.printQueue(); }
       else if (parts[0] === 'part' && parts[2] === 'in') { nav = 'library'; await screens.move(parts[1], 'in'); }
       else if (parts[0] === 'part') { nav = 'library'; await screens.part(parts[1]); }
       else if (parts[0] === 'unknown') { nav = ''; await screens.unknown(decodeURIComponent(parts.slice(1).join('/'))); }

@@ -503,3 +503,137 @@ def add_person(conn, initials: str, name: str = "", role: str = "") -> dict[str,
         (initials, name.strip(), role.strip()),
     )
     return dict(conn.execute("SELECT * FROM people WHERE initials = ?", (initials,)).fetchone())
+
+
+# ---------------------------------------------------------------- labels and printing
+
+def list_presets(conn) -> list[dict[str, Any]]:
+    return [dict(r) for r in conn.execute("SELECT * FROM label_presets ORDER BY sort, id")]
+
+
+def get_preset(conn, preset_id: int) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM label_presets WHERE id = ?", (preset_id,)).fetchone()
+    if not row:
+        raise NotFound("That label size doesn't exist.")
+    return dict(row)
+
+
+def save_preset(conn, data: dict[str, Any], preset_id: int | None = None) -> dict[str, Any]:
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise ServiceError("Give the label size a name.")
+    try:
+        w, h = float(data.get("width_in")), float(data.get("height_in"))
+    except (TypeError, ValueError):
+        raise ServiceError("Width and height must be numbers (inches).") from None
+    if not (0.25 <= w <= 4 and 0.25 <= h <= 4):
+        raise ServiceError("Width and height must be between 0.25 and 4 inches.")
+    vals = (name, (data.get("description") or "").strip(), w, h, int(bool(data.get("show_name", True))),
+            int(bool(data.get("show_location", True))), int(data.get("sort") or 0))
+    try:
+        if preset_id is None:
+            cur = conn.execute(
+                "INSERT INTO label_presets(name, description, width_in, height_in, show_name, show_location, sort)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)", vals)
+            preset_id = cur.lastrowid
+        else:
+            get_preset(conn, preset_id)
+            conn.execute(
+                "UPDATE label_presets SET name = ?, description = ?, width_in = ?, height_in = ?, show_name = ?,"
+                " show_location = ?, sort = ? WHERE id = ?", (*vals, preset_id))
+    except sqlite3.IntegrityError:
+        raise ServiceError(f"There's already a label size called {name}.") from None
+    return get_preset(conn, preset_id)
+
+
+def label_image(conn, part_id: int, preset_id: int, show_name: bool | None = None, show_location: bool | None = None):
+    from . import labels
+
+    part = _part_row(conn, part_id)
+    preset = get_preset(conn, preset_id)
+    location = ", ".join(x for x in (part["room"], part["location_text"]) if x)
+    size = labels.LabelSize(
+        preset["width_in"], preset["height_in"],
+        bool(preset["show_name"]) if show_name is None else show_name,
+        bool(preset["show_location"]) if show_location is None else show_location,
+    )
+    try:
+        return labels.render(labels.LabelContent(part["part_no"], part["name"], location), size,
+                             int(get_setting(conn, "label_dpi")))
+    except labels.LabelTooSmall as exc:
+        raise ServiceError(str(exc)) from None
+
+
+def printer_status(conn) -> dict[str, Any]:
+    from . import printing
+
+    saved = get_setting(conn, "label_printer")
+    return {
+        "can_print": printing.available(),
+        "printers": printing.list_printers(),
+        "selected": printing.pick_printer(saved),
+        "saved": saved,
+        "waiting": conn.execute("SELECT COUNT(*) FROM print_jobs WHERE status = 'waiting'").fetchone()[0],
+    }
+
+
+def _run_job(conn, job: sqlite3.Row) -> tuple[bool, str]:
+    from . import printing
+
+    preset = get_preset(conn, job["preset_id"])
+    img = label_image(conn, job["part_id"], job["preset_id"], bool(job["show_name"]), bool(job["show_location"]))
+    printer = printing.pick_printer(get_setting(conn, "label_printer"))
+    try:
+        if not printing.available():
+            raise printing.PrinterUnavailable("Printing only works on the Windows shop PC.")
+        if not printer:
+            raise printing.PrinterUnavailable("No label printer found. Check that the Brady is on and plugged in.")
+        part = _part_row(conn, job["part_id"])
+        printing.print_labels(printer, [img] * job["copies"], preset["width_in"], preset["height_in"], f"Label {part['part_no']}")
+    except printing.PrinterUnavailable as exc:
+        conn.execute("UPDATE print_jobs SET error = ? WHERE id = ?", (str(exc), job["id"]))
+        return False, str(exc)
+    conn.execute("UPDATE print_jobs SET status = 'printed', error = '' WHERE id = ?", (job["id"],))
+    return True, ""
+
+
+def print_label(conn, part_id: int, preset_id: int, copies: int, show_name: bool, show_location: bool, who: str = "") -> dict[str, Any]:
+    """Print now if the printer is there; otherwise keep the job in the queue to print later."""
+    copies = _whole(copies, "Copies")
+    if not 1 <= copies <= 200:
+        raise ServiceError("Copies must be between 1 and 200.")
+    label_image(conn, part_id, preset_id, show_name, show_location)  # fail early if it doesn't fit
+    cur = conn.execute(
+        "INSERT INTO print_jobs(part_id, preset_id, copies, show_name, show_location, who) VALUES (?, ?, ?, ?, ?, ?)",
+        (part_id, preset_id, copies, int(show_name), int(show_location), (who or "").upper()),
+    )
+    job = conn.execute("SELECT * FROM print_jobs WHERE id = ?", (cur.lastrowid,)).fetchone()
+    ok, error = _run_job(conn, job)
+    return {"printed": ok, "queued": not ok, "error": error, "job_id": job["id"]}
+
+
+def list_print_jobs(conn, status: str = "waiting") -> list[dict[str, Any]]:
+    return [dict(r) for r in conn.execute(
+        "SELECT j.*, p.part_no, p.name, l.name AS preset FROM print_jobs j JOIN parts p ON p.id = j.part_id"
+        " JOIN label_presets l ON l.id = j.preset_id WHERE j.status = ? ORDER BY j.id", (status,)
+    )]
+
+
+def retry_print_jobs(conn) -> dict[str, Any]:
+    printed, last_error = 0, ""
+    for job in conn.execute("SELECT * FROM print_jobs WHERE status = 'waiting' ORDER BY id").fetchall():
+        ok, err = _run_job(conn, job)
+        if not ok:
+            last_error = err
+            break
+        printed += 1
+    waiting = conn.execute("SELECT COUNT(*) FROM print_jobs WHERE status = 'waiting'").fetchone()[0]
+    return {"printed": printed, "waiting": waiting, "error": last_error}
+
+
+def cancel_print_job(conn, job_id: int) -> None:
+    conn.execute("UPDATE print_jobs SET status = 'cancelled' WHERE id = ? AND status = 'waiting'", (job_id,))
+
+
+def set_label_printer(conn, name: str) -> None:
+    set_setting(conn, "label_printer", name.strip())

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -13,12 +14,50 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
+from pathlib import Path
 
 import uvicorn
 
 from . import __version__, config
 from .api import create_app
+
+
+# Folder this copy's code runs from. Lets a new start tell "this copy is already running"
+# apart from "a different copy (other folder, branch or version) is running".
+CODE_DIR = str(Path(__file__).resolve().parent)
+
+
+# Description: Asks an app already running on the port which copy it is.
+#     Used by main() to avoid silently opening a window to an old or different copy.
+# Parameters:
+#     1: url - [str] The app's address, e.g. "http://127.0.0.1:8765/".
+# Returns: [dict or None] {"version", "code_dir"} from the running copy, or None if it
+#     isn't STJ Parts or didn't answer.
+def _running_copy(url: str) -> dict | None:
+    try:
+        with urllib.request.urlopen(url + "api/version", timeout=2) as r:
+            info = json.loads(r.read().decode("utf-8"))
+        return info if isinstance(info, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+# Description: Shows a warning the person will see: a pop-up box on Windows (the .exe has
+#     no console), and a line in the terminal everywhere.
+# Parameters:
+#     1: message - [str] The text to show.
+# Returns: Nothing.
+def _warn(message: str) -> None:
+    print("STJ Parts: " + message, file=sys.stderr)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, message, "STJ Parts", 0x30)  # 0x30 = warning icon
+        except Exception:
+            pass
 
 
 # Description: Checks whether something is already listening on the app's port, which means
@@ -52,7 +91,9 @@ def open_window(url: str) -> None:
     webbrowser.open(url)
 
 
-# Description: Starts STJ Parts. If it is already running, it just opens another window.
+# Description: Starts STJ Parts. If this same copy is already running, it just opens another
+#     window. If a different copy (another folder, branch or version) is running, it warns
+#     and stops instead of quietly showing the other copy.
 #     Otherwise it starts the local server and opens the app window. When packaged as an .exe
 #     with no console, output goes to stjparts.log in the data folder.
 #     This is what runs when you double-click STJParts.exe or press F5 in VS Code.
@@ -75,10 +116,21 @@ def main(argv: list[str] | None = None) -> None:
         sys.stderr = sys.stderr or log
 
     if _port_in_use(args.port):
-        # Already running (for example from the tray): just open another window.
-        if not args.no_open:
-            open_window(url)
-        return
+        running = _running_copy(url)
+        if running is not None and running.get("code_dir") == CODE_DIR and running.get("version") == __version__:
+            # This same copy is already running (for example from the tray): just open another window.
+            if not args.no_open:
+                open_window(url)
+            return
+        # A different copy (another folder, branch or version) holds the port. Opening a window
+        # would silently show that copy, so stop and say so instead.
+        if running is None:
+            detail = f"Something else is already using port {args.port}."
+        else:
+            detail = (f"STJ Parts {running.get('version', '?')} is already running from\n"
+                      f"{running.get('code_dir', 'an unknown folder')}.")
+        _warn(f"{detail}\n\nClose it first (Task Manager: end Python or STJParts.exe), then start again.")
+        sys.exit(1)
 
     print(f"STJ Parts {__version__}: data in {config.data_dir()}")
     print(f"Open {url}")

@@ -494,10 +494,11 @@ def create_app(db_file: Path | str | None = None) -> FastAPI:
 
     # Description: GET /api/version. The app's version number (used by the build check).
     # Parameters: None.
-    # Returns: [dict] "version", e.g. "0.2.0".
+    # Returns: [dict] "version", e.g. "0.2.0", and "code_dir", the folder this copy runs from
+    #     (so a second start can tell whether the same copy is already running).
     @app.get("/api/version")
     def version():
-        return {"version": __version__}
+        return {"version": __version__, "code_dir": str(Path(__file__).resolve().parent)}
 
     # ======================================================================================
     # SCREENS

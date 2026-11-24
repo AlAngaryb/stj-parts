@@ -130,6 +130,8 @@ Draft 2026-11-20. Built from Controller's and the maintenance manager's decision
 - Server copy for multiple sites.
 - Formal shelf, cabinet and drawer numbering with location barcodes.
 - Linking to a CMMS or work orders.
+- Recommended PM cycles: optional free-text box on the part page (e.g. "grease every 3 months; replace seals every 12 months"). Searchable. (Controller, 2026-11-24)
+- Condition: New or Used/rebuilt choice when adding a part, shown as a USED tag on the part page and label. Open question: one condition per part, or tracked per unit when new and used are on the shelf together. (Controller, 2026-11-24)
 
 ## Not included (decided)
 - Reserving parts.

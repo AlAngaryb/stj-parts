@@ -505,6 +505,20 @@ def create_app(db_file: Path | str | None = None) -> FastAPI:
     # ======================================================================================
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
+    # Description: Tells the browser to check for a newer copy of the screens every time,
+    #     so after an update (or switching git branches) nobody sees an old cached screen.
+    #     The files are tiny and come from this PC, so this costs nothing noticeable.
+    # Parameters:
+    #     1: request - [Request] The incoming request.
+    #     2: call_next - [function] Hands the request on and returns the response.
+    # Returns: [Response] The response, with "Cache-Control: no-cache" on screen files.
+    @app.middleware("http")
+    async def no_stale_screens(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     # Description: GET /. Sends the main page (index.html); the screens load from there.
     # Parameters: None.
     # Returns: [FileResponse] The HTML page.

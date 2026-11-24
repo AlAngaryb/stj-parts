@@ -40,6 +40,8 @@ def test_patch_rejects_unknown_fields(client):
 def test_index_page_served(client):
     r = client.get("/")
     assert r.status_code == 200 and "STJ Parts" in r.text
+    assert r.headers["cache-control"] == "no-cache"
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
 
 
 def test_parallel_requests_dont_fail(client):
